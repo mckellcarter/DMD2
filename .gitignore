@@ -183,3 +183,15 @@ ignored_cache
 
 *.jpg
 *.png
+
+# Model checkpoints and weights
+checkpoints/
+*.pth
+*.ckpt
+*.pt
+*.safetensors
+*.bin
+*.h5
+*.weights
+model_*.pth
+checkpoint_*.pth

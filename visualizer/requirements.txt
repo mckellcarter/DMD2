@@ -1,0 +1,11 @@
+# Visualization-specific dependencies
+# Install main DMD2 requirements first: pip install -r ../requirements.txt
+
+dash>=2.14.0
+dash-bootstrap-components>=1.5.0
+plotly>=5.18.0
+umap-learn>=0.5.5
+pandas>=2.0.0
+pillow>=10.0.0
+scikit-learn>=1.3.0
+colorcet>=3.0.1

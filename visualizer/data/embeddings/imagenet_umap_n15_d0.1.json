@@ -1,0 +1,10 @@
+{
+  "model": "imagenet",
+  "n_neighbors": 15,
+  "min_dist": 0.1,
+  "metric": "euclidean",
+  "n_components": 2,
+  "normalize": true,
+  "random_state": 42,
+  "num_samples": 1000
+}
