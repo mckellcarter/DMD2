@@ -189,7 +189,12 @@ def generate_imagenet_dataset(
         # Get activations
         activations = extractor.get_activations()
 
-        # Save each sample
+        # Save batch activations once
+        batch_id = f"batch_{batch_idx:06d}"
+        batch_act_path = activation_dir / batch_id
+        extractor.save_activations(batch_act_path)
+
+        # Save individual images and track metadata
         for i in range(current_batch_size):
             sample_id = f"sample_{sample_idx:06d}"
 
@@ -197,29 +202,21 @@ def generate_imagenet_dataset(
             img_path = image_dir / f"{sample_id}.png"
             Image.fromarray(images[i]).save(img_path)
 
-            # Save activations
-            sample_activations = {
-                layer: act[i:i+1] for layer, act in activations.items()
-            }
-            act_path = activation_dir / sample_id
-            extractor.save_activations(
-                act_path,
-                metadata={
-                    "sample_id": sample_id,
-                    "class_label": int(batch_labels[i]),
-                    "seed": seed,
-                }
-            )
-
-            # Track metadata
+            # Track metadata with batch info
             all_metadata.append({
                 "sample_id": sample_id,
                 "class_label": int(batch_labels[i]),
                 "image_path": str(img_path.relative_to(output_dir)),
-                "activation_path": str(act_path.relative_to(output_dir)),
+                "activation_path": str(batch_act_path.relative_to(output_dir)),
+                "batch_index": i,
             })
 
             sample_idx += 1
+
+    # Load ImageNet class labels
+    class_labels_path = Path(__file__).parent / "data" / "imagenet_class_labels.json"
+    with open(class_labels_path, 'r') as f:
+        class_labels = json.load(f)
 
     # Save global metadata
     metadata_path = metadata_dir / "dataset_info.json"
@@ -230,6 +227,7 @@ def generate_imagenet_dataset(
             "layers": layers,
             "conditioning_sigma": conditioning_sigma,
             "seed": seed,
+            "class_labels": class_labels,
             "samples": all_metadata
         }, f, indent=2)
 
