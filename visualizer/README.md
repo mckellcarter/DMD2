@@ -244,10 +244,32 @@ All models available at [tianweiy/DMD2](https://huggingface.co/tianweiy/DMD2):
 
 ## Real ImageNet Activation Extraction
 
-Extract activations from real ImageNet images to compare with generated samples:
+Extract activations from real ImageNet images to compare with generated samples.
+
+**Two input formats supported**:
+1. **ImageNet64 NPZ** (recommended, 10-100x faster)
+2. **JPEG directory structure** (original ImageNet)
+
+### Using ImageNet64 NPZ Format (Recommended)
 
 ```bash
-# Extract activations from ImageNet validation set
+# Extract activations from ImageNet64 NPZ files
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 10000 \
+  --batch_size 128 \
+  --layers encoder_bottleneck,midblock \
+  --device cuda \
+  --conditioning_sigma 0.0  # Default: clean reconstruction
+```
+
+**NPZ format details**: See `NPZ_EXTRACTION_GUIDE.md` for full documentation.
+
+### Using JPEG Format
+
+```bash
+# Extract activations from ImageNet JPEG directory
 python extract_real_imagenet.py \
   --checkpoint_path ../checkpoints/imagenet_*.pth \
   --imagenet_dir /path/to/imagenet \

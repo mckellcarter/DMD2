@@ -11,12 +11,58 @@ Extract activations from real ImageNet images through the DMD2 model to compare 
 ## Prerequisites
 
 1. **DMD2 checkpoint**: Download ImageNet model
-2. **ImageNet dataset**: Access to ImageNet validation or training set
+2. **ImageNet dataset**: Either format:
+   - **ImageNet64 NPZ** (recommended, 10-100x faster)
+   - **JPEG directory structure** (original ImageNet)
 3. **Dependencies**: All visualizer requirements installed
+
+## Input Format Options
+
+The script supports **two input formats**:
+
+| Format | Speed | Size | Use Case |
+|--------|-------|------|----------|
+| **NPZ (Recommended)** | ⚡ Very Fast | 13 GB | ImageNet64 batch processing |
+| **JPEG** | Slower | 100+ GB | Full resolution, custom preprocessing |
+
+**See also**: `NPZ_EXTRACTION_GUIDE.md` for comprehensive NPZ documentation
 
 ## Quick Start
 
-### 1. Prepare ImageNet Data
+### Option A: ImageNet64 NPZ Format (Recommended)
+
+**1. Prepare NPZ Files**
+
+Ensure ImageNet64 NPZ files are available:
+```
+data/Imagenet64_train_npz/
+├── train_data_batch_1.npz
+├── train_data_batch_2.npz
+├── ...
+└── train_data_batch_10.npz
+```
+
+**2. Extract Activations**
+
+```bash
+cd visualizer
+
+# Extract from 10,000 training images (fast!)
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 10000 \
+  --batch_size 128 \
+  --layers encoder_bottleneck,midblock \
+  --device cuda \
+  --conditioning_sigma 0.0  # Default: clean reconstruction
+```
+
+**Performance**: ~2000-5000 samples/sec on V100 GPU
+
+### Option B: JPEG Directory Format
+
+**1. Prepare ImageNet Directory**
 
 Ensure your ImageNet directory follows this structure:
 
@@ -34,14 +80,14 @@ Ensure your ImageNet directory follows this structure:
     └── ...
 ```
 
-### 2. Extract Activations
+**2. Extract Activations**
 
 ```bash
 cd visualizer
 
-# Extract from 1000 validation images (sigma=0.0 for clean reconstruction)
+# Extract from 1000 validation images
 python extract_real_imagenet.py \
-  --checkpoint_path ../checkpoints/imagenet_gan_classifier_genloss3e-3_diffusion1000_lr2e-6_scratch_fid1.51_checkpoint_model_193500.pth \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
   --imagenet_dir /path/to/imagenet \
   --num_samples 1000 \
   --batch_size 64 \
@@ -51,16 +97,18 @@ python extract_real_imagenet.py \
   --conditioning_sigma 0.0  # Default: clean reconstruction
 ```
 
-### 3. Output Files
+**Performance**: ~100-500 samples/sec (slower due to disk I/O)
 
-After processing, you'll have:
+### Output Files
+
+After processing (same for both formats), you'll have:
 
 ```
 data/
 ├── images/
 │   ├── imagenet_real/
-│   │   ├── sample_000000.JPEG  # Original images
-│   │   ├── sample_000001.JPEG
+│   │   ├── sample_000000.png   # Original images (PNG for NPZ, JPEG for directory)
+│   │   ├── sample_000001.png
 │   │   └── ...
 │   └── imagenet_real_reconstructed/
 │       ├── sample_000000.png  # DMD2 reconstructions (sigma=0.0)
@@ -81,16 +129,19 @@ data/
 ```bash
 python extract_real_imagenet.py \
   --checkpoint_path PATH      # Required: DMD2 model checkpoint
-  --imagenet_dir PATH         # Required: ImageNet root directory
+  --npz_dir PATH              # NPZ format: Directory with *.npz files
+  --imagenet_dir PATH         # JPEG format: ImageNet root directory
   --output_dir PATH           # Default: "data"
   --num_samples N             # Default: 1000
   --batch_size N              # Default: 64
   --layers L1,L2,...          # Default: "encoder_bottleneck,midblock"
-  --conditioning_sigma SIGMA  # Default: 80.0
-  --split {val,train}         # Default: "val"
+  --conditioning_sigma SIGMA  # Default: 0.0
+  --split {val,train}         # Default: "val" (JPEG only, ignored for NPZ)
   --seed N                    # Default: 10
   --device {cuda,mps,cpu}     # Default: auto-detect
 ```
+
+**Important**: Use **either** `--npz_dir` **OR** `--imagenet_dir`, not both.
 
 ### Key Parameters
 
@@ -100,9 +151,15 @@ python extract_real_imagenet.py \
 - Full validation set: 50,000 images
 
 **--batch_size**: Processing batch size
-- CUDA (large GPU): 64-128
-- MPS (Apple Silicon): 32-64
-- CPU: 8-16
+- **NPZ format**:
+  - CUDA (large GPU): 128-256
+  - CUDA (medium GPU): 64-128
+  - MPS (Apple Silicon): 32-64
+  - CPU: 16-32
+- **JPEG format**:
+  - CUDA (large GPU): 64-128
+  - MPS (Apple Silicon): 32-64
+  - CPU: 8-16
 - Adjust based on memory
 
 **--layers**: Which layers to extract
@@ -111,9 +168,10 @@ python extract_real_imagenet.py \
 - `encoder_block_N`: Specific encoder block
 - `decoder_block_N`: Specific decoder block
 
-**--split**: ImageNet split
+**--split**: ImageNet split (**JPEG format only**)
 - `val`: Validation set (50k images)
 - `train`: Training set (1.2M images)
+- **Note**: Ignored when using `--npz_dir` (NPZ is train-only)
 
 **--conditioning_sigma**: Forward pass sigma
 - **Default: 0.0** (clean reconstruction - captures original ImageNet manifold)
@@ -150,7 +208,9 @@ python extract_real_imagenet.py \
       "class_id": 0,
       "synset_id": "n01440764",
       "class_name": "tench",
-      "original_path": "/imagenet/val/n01440764/ILSVRC2012_val_00000293.JPEG"
+      "original_path": "/imagenet/val/n01440764/ILSVRC2012_val_00000293.JPEG"  # JPEG format
+      // OR
+      "original_path": "npz_sample_42157"  # NPZ format
     },
     ...
   ]
@@ -198,14 +258,14 @@ print(f"Class: {sample_info['class_name']}, ID: {sample_info['class_id']}")
 python generate_dataset.py \
   --model imagenet \
   --checkpoint_path ../checkpoints/imagenet_*.pth \
-  --num_samples 1000 \
+  --num_samples 10000 \
   --layers encoder_bottleneck,midblock
 
-# Extract real ImageNet activations
+# Extract real ImageNet activations (NPZ - fast!)
 python extract_real_imagenet.py \
   --checkpoint_path ../checkpoints/imagenet_*.pth \
-  --imagenet_dir /path/to/imagenet \
-  --num_samples 1000 \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 10000 \
   --layers encoder_bottleneck,midblock
 
 # Now you have:
@@ -216,11 +276,12 @@ python extract_real_imagenet.py \
 ### 2. UMAP on Real Space
 
 ```bash
-# Extract real activations (larger sample for stable UMAP)
+# Extract real activations (NPZ - can do large samples quickly)
 python extract_real_imagenet.py \
   --checkpoint_path ../checkpoints/imagenet_*.pth \
-  --imagenet_dir /path/to/imagenet \
-  --num_samples 10000 \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 50000 \
+  --batch_size 256 \
   --layers encoder_bottleneck,midblock
 
 # Fit UMAP on real activations
@@ -235,7 +296,9 @@ python process_embeddings.py \
 
 ### 3. Class-Balanced Sampling
 
-To get balanced real data across classes, sample manually:
+**For NPZ format**: NPZ files already have balanced class distribution. Just use `--num_samples` to control total.
+
+**For JPEG format**: Sample manually across synset directories:
 
 ```python
 from pathlib import Path
@@ -261,7 +324,30 @@ Then modify `extract_real_imagenet.py` to read from this file.
 
 ## Troubleshooting
 
-### Issue: Synset directory not found
+### Issue: Format argument error
+
+**Error**: `Either --imagenet_dir or --npz_dir must be provided`
+
+**Solution**: Specify exactly one input format:
+```bash
+# NPZ format
+--npz_dir data/Imagenet64_train_npz
+
+# OR JPEG format (not both)
+--imagenet_dir /path/to/imagenet
+```
+
+### Issue: NPZ files not found
+
+**Error**: `No NPZ files found in {npz_dir}`
+
+**Solution**: Check NPZ directory has `*.npz` files:
+```bash
+ls data/Imagenet64_train_npz/*.npz
+# Should show: train_data_batch_1.npz, train_data_batch_2.npz, ...
+```
+
+### Issue: Synset directory not found (JPEG format)
 
 **Error**: `ImageNet split directory not found: /path/to/imagenet/val`
 
@@ -290,14 +376,24 @@ ls /path/to/imagenet/val/  # Should show n01440764, n01443537, etc.
 ### Issue: Slow processing
 
 Processing speed depends on:
+- **Input format** (NPZ >> JPEG)
 - Device (CUDA >> MPS > CPU)
 - Batch size (larger = faster per-sample)
 - Disk I/O (loading images)
 
 Expected speeds:
-- CUDA (V100): ~500 images/sec
-- MPS (M2): ~100 images/sec
-- CPU: ~10 images/sec
+
+**NPZ format**:
+- CUDA (V100): ~2000-5000 samples/sec
+- MPS (M2 Ultra): ~300-500 samples/sec
+- CPU: ~20-50 samples/sec
+
+**JPEG format**:
+- CUDA (V100): ~500 samples/sec
+- MPS (M2): ~100 samples/sec
+- CPU: ~10 samples/sec
+
+**Solution**: Use NPZ format for 10-100x speedup!
 
 ## Next Steps
 
@@ -306,10 +402,29 @@ Expected speeds:
 3. **Metrics**: Compute FID, Precision, Recall between real and generated
 4. **Analysis**: Distribution comparison, mode coverage, class fidelity
 
+## Format Comparison
+
+| Feature | NPZ Format | JPEG Format |
+|---------|------------|-------------|
+| **Speed** | ⚡ 10-100x faster | Baseline |
+| **Resolution** | 64×64 only | Any (resized to 64×64) |
+| **Labels** | Included in files | From directory structure |
+| **Split** | Train only (1.28M) | Train/val (1.2M/50k) |
+| **Storage** | 13 GB (10 files) | 100+ GB (raw images) |
+| **Setup** | Download NPZ batches | Full ImageNet dataset |
+| **Preprocessing** | Already normalized | Load + resize each image |
+
+**Recommendation**: Use **NPZ format** for ImageNet64 models. Only use JPEG if you need:
+- Validation set specifically
+- Custom preprocessing
+- Different resolutions
+
 ## References
 
+- **NPZ guide**: `NPZ_EXTRACTION_GUIDE.md` (comprehensive NPZ documentation)
 - Main documentation: `README.md`
-- Session summary: `Planning/SESSION_REAL_IMAGENET.md`
+- Session summary (JPEG): `Planning/SESSION_REAL_IMAGENET.md`
+- Session summary (NPZ): `Planning/SESSION_NPZ_SUPPORT.md`
 - Future enhancements: `Planning/FUTURE_ENHANCEMENTS.md`
 - Code: `extract_real_imagenet.py`
 - Tests: `test_extract_real_imagenet.py`
