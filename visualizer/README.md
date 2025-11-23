@@ -16,6 +16,7 @@ Visualize UNet activations from DMD2 models (ImageNet, SDXL, SDv1.5) in an inter
 - **Neighbor selection**: Click to toggle manual neighbors, view K-nearest neighbors
 - **Class labels**: Human-readable ImageNet class names
 - **Resume generation**: Incrementally append to existing datasets
+- **Generate from neighbors**: Create new images by interpolating neighbor activations via UMAP inverse transform with masked generation
 
 ## Installation
 
@@ -102,6 +103,12 @@ Creates `data/embeddings/imagenet_umap_n15_d0.1.csv`
 python visualization_app.py \
   --embeddings data/embeddings/imagenet_umap_n15_d0.1.csv
 
+# With generation enabled (requires checkpoint)
+python visualization_app.py \
+  --embeddings data/embeddings/imagenet_umap_n15_d0.1.csv \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --device cuda
+
 # Or load activations for dynamic UMAP
 python visualization_app.py --data_dir data
 ```
@@ -186,8 +193,21 @@ python process_embeddings.py \
 - Click to select point (blue highlight)
 - Click "Find Neighbors" to show K-nearest neighbors (red thin ring)
 - Click other points to toggle manual neighbors (red thick ring)
+- Click "Generate Image" to create new image from neighbor center activation
 - Click "✕" to clear selection and neighbors
 - Zoom/pan the plot
+
+**Generation from Neighbors** (requires `--checkpoint_path`):
+1. Select a point on the UMAP plot
+2. Find K-nearest neighbors or manually select neighbors by clicking
+3. Click "Generate Image" button
+4. The system will:
+   - Calculate the center of neighbors in 2D UMAP space
+   - Use UMAP inverse_transform to map back to activation space
+   - Set a hook mask to hold the layer output constant
+   - Generate a new image with the masked activation
+   - Display the new image as a green star at the neighbor center
+5. Generated images are saved to the dataset and can be used as new selection points
 
 ## Data Structure
 
@@ -222,10 +242,110 @@ All models available at [tianweiy/DMD2](https://huggingface.co/tianweiy/DMD2):
 **SDv1.5-512** (not yet implemented):
 - `laion6.25_sd_baseline_8node_guidance1.75_lr5e-7_seed10_dfake10_diffusion1000_gan1e-3_resume_fid8.35_checkpoint_model_041000`
 
+## Real ImageNet Activation Extraction
+
+Extract activations from real ImageNet images to compare with generated samples.
+
+**Two input formats supported**:
+1. **ImageNet64 NPZ** (recommended, 10-100x faster)
+2. **JPEG directory structure** (original ImageNet)
+
+### Using ImageNet64 NPZ Format (Recommended)
+
+```bash
+# Extract activations from ImageNet64 NPZ files
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 10000 \
+  --batch_size 128 \
+  --layers encoder_bottleneck,midblock \
+  --device cuda \
+  --conditioning_sigma 0.0  # Default: clean reconstruction
+```
+
+**NPZ format details**: See `NPZ_EXTRACTION_GUIDE.md` for full documentation.
+
+### Using JPEG Format
+
+```bash
+# Extract activations from ImageNet JPEG directory
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --imagenet_dir /path/to/imagenet \
+  --num_samples 1000 \
+  --batch_size 64 \
+  --layers encoder_bottleneck,midblock \
+  --split val \
+  --device cuda \
+  --conditioning_sigma 0.0  # Default: clean reconstruction
+```
+
+**Conditioning Sigma**:
+- `--conditioning_sigma 0.0` (default): Clean reconstruction - captures original ImageNet manifold
+- `--conditioning_sigma 80.0`: High noise level - matches generated image processing
+- Use 0.0 for fitting UMAP on real images, 80.0 only if comparing with generated at same noise level
+
+**Expected ImageNet structure**:
+```
+imagenet/
+├── val/
+│   ├── n01440764/
+│   │   └── ILSVRC2012_val_*.JPEG
+│   ├── n01443537/
+│   │   └── ILSVRC2012_val_*.JPEG
+│   └── ...
+└── train/
+    └── ...
+```
+
+**Output structure**:
+```
+data/
+├── images/
+│   ├── imagenet_real/
+│   │   └── sample_000000.JPEG (copied from original)
+│   └── imagenet_real_reconstructed/
+│       └── sample_000000.png (reconstructed by DMD2 at sigma=0.0)
+├── activations/imagenet_real/
+│   ├── batch_000000.npz  # Batch activations
+│   └── batch_000000.json # Batch metadata with ImageNet IDs
+└── metadata/imagenet_real/
+    └── dataset_info.json  # Global metadata
+```
+
+**Reconstructed Images**: At sigma=0.0, DMD2 acts nearly as identity (c_skip=1.0, c_out=0.0), so reconstructed images should closely match originals. Compare these to verify model behavior.
+
+**Batch metadata format**:
+Each batch JSON file includes ImageNet identifiers:
+```json
+{
+  "batch_size": 64,
+  "layers": ["encoder_bottleneck", "midblock"],
+  "samples": [
+    {
+      "batch_index": 0,
+      "class_id": 0,
+      "synset_id": "n01440764",
+      "class_name": "tench",
+      "original_path": "/path/to/imagenet/val/n01440764/img.JPEG"
+    },
+    ...
+  ]
+}
+```
+
+**Use cases**:
+- Compare real vs generated activation distributions
+- Fit UMAP on real ImageNet, project generated samples
+- Analyze mode coverage and distribution shift
+- Visualize both real and generated in same embedding space
+
 ## Architecture
 
 **extract_activations.py**: Hook-based activation capture
-**generate_dataset.py**: Batch image + activation generation
+**generate_dataset.py**: Batch image + activation generation (for generated images)
+**extract_real_imagenet.py**: Batch activation extraction from real ImageNet images
 **process_embeddings.py**: UMAP dimensionality reduction
 **visualization_app.py**: Dash/Plotly interactive app
 
@@ -258,6 +378,14 @@ All models available at [tianweiy/DMD2](https://huggingface.co/tianweiy/DMD2):
 - Check `torch.backends.mps.is_available()` for MPS
 - Check `torch.cuda.is_available()` for CUDA
 - Update PyTorch to latest version
+
+## Future Enhancements
+
+See `Planning/FUTURE_ENHANCEMENTS.md` for detailed proposals.
+
+**High priority**:
+- Label conditioning options (uniform, zero, neighbor-average)
+- Additional UI improvements
 
 ## References
 

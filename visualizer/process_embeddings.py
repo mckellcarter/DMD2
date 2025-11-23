@@ -8,6 +8,7 @@ import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 import json
+import pickle
 from umap import UMAP
 from sklearn.preprocessing import StandardScaler
 
@@ -17,52 +18,110 @@ from extract_activations import load_activations, flatten_activations
 def load_dataset_activations(
     activation_dir: Path,
     metadata_path: Path,
-    max_samples: int = None
+    max_samples: int = None,
+    batch_size: int = 500,
+    low_memory: bool = False
 ):
     """
-    Load all activations from dataset.
+    Load all activations from dataset using batched loading to reduce memory.
 
     Args:
         activation_dir: Directory containing activation .npz files
         metadata_path: Path to dataset_info.json
         max_samples: Optional limit on samples to load
+        batch_size: Number of samples to load per batch
+        low_memory: Use memory-mapped temp file (slower but handles large datasets)
 
     Returns:
         (activation_matrix, metadata_df)
         - activation_matrix: (N, D) array of flattened activations
         - metadata_df: DataFrame with sample info
     """
+    import tempfile
+
     # Load metadata
     with open(metadata_path, 'r') as f:
         dataset_info = json.load(f)
 
     samples = dataset_info['samples'][:max_samples] if max_samples else dataset_info['samples']
 
-    print(f"Loading {len(samples)} samples...")
+    print(f"Loading {len(samples)} samples in batches of {batch_size}...")
+    if low_memory:
+        print("Using low-memory mode (memory-mapped file)")
 
-    all_activations = []
+    # First pass: determine activation shape
+    first_sample = samples[0]
+    first_path = activation_dir / f"{first_sample['sample_id']}.npz"
+    first_act, _ = load_activations(first_path)
+    first_flat = flatten_activations(first_act)
+    activation_dim = first_flat.shape[1]
+
+    # Preallocate array (memory-mapped if low_memory)
+    if low_memory:
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        activation_matrix = np.memmap(
+            temp_file.name,
+            dtype=np.float32,
+            mode='w+',
+            shape=(len(samples), activation_dim)
+        )
+    else:
+        activation_matrix = np.zeros((len(samples), activation_dim), dtype=np.float32)
+
     metadata_records = []
 
-    for sample in tqdm(samples, desc="Loading activations"):
-        sample_id = sample['sample_id']
-        act_path = activation_dir / f"{sample_id}.npz"
+    # Load in batches
+    valid_idx = 0
+    batch_cache = {}  # Cache batch NPZ files to avoid redundant loads
 
-        if not act_path.exists():
-            print(f"Warning: Missing {act_path}")
-            continue
+    for i in tqdm(range(0, len(samples), batch_size), desc="Loading batches"):
+        batch_samples = samples[i:i+batch_size]
 
-        # Load activations
-        activations, _ = load_activations(act_path)
+        for sample in batch_samples:
+            sample_id = sample['sample_id']
 
-        # Flatten to 1D vector
-        flat_act = flatten_activations(activations)
-        all_activations.append(flat_act[0])  # Remove batch dim
+            # Get batch path and index from metadata
+            if 'batch_index' in sample:
+                # New format: batch files
+                act_path_str = sample['activation_path']
+                batch_index = sample['batch_index']
+                act_path = activation_dir.parent / act_path_str
+            else:
+                # Old format: individual sample files (backwards compatibility)
+                act_path = activation_dir / f"{sample_id}.npz"
+                batch_index = 0
 
-        # Store metadata
-        metadata_records.append(sample)
+            if not act_path.exists():
+                print(f"Warning: Missing {act_path}")
+                continue
 
-    # Stack into matrix
-    activation_matrix = np.stack(all_activations, axis=0)
+            # Load activations (use cache for batch files)
+            act_path_key = str(act_path)
+            if act_path_key not in batch_cache:
+                activations, _ = load_activations(act_path)
+                batch_cache[act_path_key] = activations
+            else:
+                activations = batch_cache[act_path_key]
+
+            # Flatten to 1D vector
+            flat_act = flatten_activations(activations)
+            activation_matrix[valid_idx] = flat_act[batch_index]
+
+            # Store metadata
+            metadata_records.append(sample)
+            valid_idx += 1
+
+    # Trim to valid samples
+    if low_memory:
+        # Copy to regular array and cleanup
+        result = np.array(activation_matrix[:valid_idx])
+        del activation_matrix
+        import os
+        os.unlink(temp_file.name)
+        activation_matrix = result
+    else:
+        activation_matrix = activation_matrix[:valid_idx]
+
     metadata_df = pd.DataFrame(metadata_records)
 
     print(f"Loaded activations: {activation_matrix.shape}")
@@ -77,7 +136,7 @@ def compute_umap(
     n_components: int = 2,
     random_state: int = 42,
     normalize: bool = True
-) -> np.ndarray:
+):
     """
     Compute UMAP projection.
 
@@ -91,7 +150,10 @@ def compute_umap(
         normalize: Whether to normalize before UMAP
 
     Returns:
-        (N, n_components) UMAP coordinates
+        (embeddings, reducer, scaler)
+        - embeddings: (N, n_components) UMAP coordinates
+        - reducer: Fitted UMAP model
+        - scaler: Fitted StandardScaler (or None if not normalized)
     """
     print(f"\nComputing UMAP with:")
     print(f"  n_neighbors={n_neighbors}")
@@ -100,6 +162,7 @@ def compute_umap(
     print(f"  n_components={n_components}")
 
     # Normalize activations
+    scaler = None
     if normalize:
         print("Normalizing activations...")
         scaler = StandardScaler()
@@ -119,14 +182,16 @@ def compute_umap(
     embeddings = reducer.fit_transform(activations)
 
     print(f"UMAP embeddings: {embeddings.shape}")
-    return embeddings
+    return embeddings, reducer, scaler
 
 
 def save_embeddings(
     embeddings: np.ndarray,
     metadata_df: pd.DataFrame,
     output_path: Path,
-    umap_params: dict
+    umap_params: dict,
+    reducer=None,
+    scaler=None
 ):
     """
     Save UMAP embeddings + metadata to CSV.
@@ -136,6 +201,8 @@ def save_embeddings(
         metadata_df: DataFrame with sample metadata
         output_path: Output CSV path
         umap_params: Dict of UMAP parameters
+        reducer: Fitted UMAP model (for inverse_transform)
+        scaler: Fitted StandardScaler (for inverse_transform)
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -160,6 +227,16 @@ def save_embeddings(
     with open(param_path, 'w') as f:
         json.dump(umap_params, f, indent=2)
     print(f"Saved parameters to {param_path}")
+
+    # Save UMAP model and scaler for inverse_transform
+    if reducer is not None:
+        model_path = output_path.with_suffix('.pkl')
+        with open(model_path, 'wb') as f:
+            pickle.dump({
+                'reducer': reducer,
+                'scaler': scaler
+            }, f)
+        print(f"Saved UMAP model to {model_path}")
 
 
 def main():
@@ -233,6 +310,11 @@ def main():
         default=42,
         help="Random seed for UMAP"
     )
+    parser.add_argument(
+        "--low_memory",
+        action="store_true",
+        help="Use memory-mapped file for large datasets (slower but uses less RAM)"
+    )
 
     args = parser.parse_args()
 
@@ -246,11 +328,12 @@ def main():
     activations, metadata_df = load_dataset_activations(
         activation_dir,
         metadata_path,
-        max_samples=args.max_samples
+        max_samples=args.max_samples,
+        low_memory=args.low_memory
     )
 
     # Compute UMAP
-    embeddings = compute_umap(
+    embeddings, reducer, scaler = compute_umap(
         activations,
         n_neighbors=args.n_neighbors,
         min_dist=args.min_dist,
@@ -275,7 +358,7 @@ def main():
         "num_samples": len(activations)
     }
 
-    save_embeddings(embeddings, metadata_df, output_path, umap_params)
+    save_embeddings(embeddings, metadata_df, output_path, umap_params, reducer, scaler)
 
     print("\nDone!")
 
