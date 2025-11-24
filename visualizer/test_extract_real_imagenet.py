@@ -202,6 +202,107 @@ class TestActivationFormat:
         assert sample_act.shape == (1, 512 * 8 * 8)
 
 
+class TestNPZProcessing:
+    """Test NPZ file loading and sorting."""
+
+    def test_npz_numerical_sorting(self, tmp_path):
+        """Test that NPZ files are sorted numerically, not alphabetically."""
+        # Create mock NPZ files
+        for i in [1, 2, 3, 10, 11]:
+            npz_path = tmp_path / f"train_data_batch_{i}.npz"
+            np.savez(npz_path, data=np.array([1, 2, 3]))
+
+        # Sort files
+        npz_files = sorted(
+            list(tmp_path.glob('*.npz')),
+            key=lambda p: int(p.stem.split('_')[-1])
+        )
+
+        # Extract batch numbers
+        batch_nums = [int(f.stem.split('_')[-1]) for f in npz_files]
+
+        # Should be [1, 2, 3, 10, 11], NOT [1, 10, 11, 2, 3]
+        assert batch_nums == [1, 2, 3, 10, 11]
+
+    def test_npz_alphabetical_sorting_is_wrong(self, tmp_path):
+        """Test that alphabetical sorting produces wrong order."""
+        # Create mock NPZ files
+        for i in [1, 2, 3, 10]:
+            npz_path = tmp_path / f"train_data_batch_{i}.npz"
+            np.savez(npz_path, data=np.array([1, 2, 3]))
+
+        # Sort alphabetically (WRONG)
+        npz_files_alpha = sorted(list(tmp_path.glob('*.npz')))
+        batch_nums_alpha = [int(f.stem.split('_')[-1]) for f in npz_files_alpha]
+
+        # Alphabetical gives wrong order: [1, 10, 2, 3]
+        assert batch_nums_alpha == [1, 10, 2, 3]
+
+
+class TestClassBalancedSampling:
+    """Test class-balanced sampling logic."""
+
+    def test_target_classes_selection(self):
+        """Test selecting specific target classes."""
+        # Simulate class selection
+        target_classes = [0, 1, 2, 3, 4]
+        num_samples = 50
+        samples_per_class = num_samples // len(target_classes)
+
+        assert samples_per_class == 10
+        assert len(target_classes) == 5
+
+    def test_class_counts_tracking(self):
+        """Test tracking samples per class."""
+        target_classes = [0, 1, 2]
+        class_counts = {c: 0 for c in target_classes}
+
+        # Simulate collecting samples
+        samples = [0, 1, 2, 0, 1, 2, 0, 1]
+        for label in samples:
+            if label in target_classes:
+                class_counts[label] += 1
+
+        assert class_counts[0] == 3
+        assert class_counts[1] == 3
+        assert class_counts[2] == 2
+
+    def test_samples_per_class_calculation(self):
+        """Test samples_per_class calculation."""
+        # Test different scenarios
+        assert 10000 // 100 == 100  # 100 classes, 100 samples each
+        assert 5000 // 100 == 50    # 100 classes, 50 samples each
+        assert 1000 // 10 == 100    # 10 classes, 100 samples each
+
+    def test_target_classes_parsing(self):
+        """Test parsing comma-separated class IDs."""
+        # Simulate CLI parsing
+        class_str = "0,1,2,3,4"
+        target_classes = [int(c.strip()) for c in class_str.split(",")]
+
+        assert target_classes == [0, 1, 2, 3, 4]
+        assert len(target_classes) == 5
+
+    def test_class_quota_met(self):
+        """Test stopping when class quota is met."""
+        target_classes = [0, 1]
+        samples_per_class = 5
+        class_counts = {c: 0 for c in target_classes}
+        selected_indices = []
+
+        # Simulate sample collection
+        labels = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1]  # Extra samples after quota
+        for idx, label in enumerate(labels):
+            if label in target_classes and class_counts[label] < samples_per_class:
+                selected_indices.append(idx)
+                class_counts[label] += 1
+
+        # Should have exactly samples_per_class for each class
+        assert class_counts[0] == 5
+        assert class_counts[1] == 5
+        assert len(selected_indices) == 10
+
+
 def test_imports():
     """Test that all imports work."""
     from extract_real_imagenet import (

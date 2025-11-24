@@ -439,7 +439,17 @@ class DMD2Visualizer:
             if not hoverData or self.df.empty:
                 return "Hover over a point", html.Div("No point hovered", className="text-muted small")
 
-            point_idx = hoverData['points'][0]['pointIndex']
+            point_data = hoverData['points'][0]
+            curve_number = point_data.get('curveNumber', 0)
+
+            # If hovering over generated overlay (trace 1+), use customdata for real index
+            if curve_number > 0 and 'customdata' in point_data:
+                # customdata is a list, extract first element
+                point_idx = point_data['customdata'][0]
+            else:
+                # Main scatter plot (trace 0), use pointIndex directly
+                point_idx = point_data['pointIndex']
+
             sample = self.df.iloc[point_idx]
 
             # Get image thumbnail for hover
@@ -458,7 +468,8 @@ class DMD2Visualizer:
 
             if 'class_label' in sample:
                 class_id = int(sample['class_label'])
-                class_name = self.get_class_name(class_id)
+                # Use class_name from CSV if available, otherwise look up
+                class_name = sample.get('class_name', self.get_class_name(class_id))
                 details.append(html.Div([
                     html.Strong("Class: "),
                     html.Span(f"{class_id}: {class_name}", className="small")
@@ -547,7 +558,8 @@ class DMD2Visualizer:
                 details.append(html.P([html.Strong("Sample ID: "), sample['sample_id']]))
                 if 'class_label' in sample:
                     class_id = int(sample['class_label'])
-                    class_name = self.get_class_name(class_id)
+                    # Use class_name from CSV if available, otherwise look up
+                    class_name = sample.get('class_name', self.get_class_name(class_id))
                     details.append(html.P([html.Strong("Class: "), f"{class_id}: {class_name}"]))
                 details.append(html.P([
                     html.Strong("UMAP Coords: "),
@@ -627,7 +639,8 @@ class DMD2Visualizer:
             details.append(html.P([html.Strong("Sample ID: "), sample['sample_id']]))
             if 'class_label' in sample:
                 class_id = int(sample['class_label'])
-                class_name = self.get_class_name(class_id)
+                # Use class_name from CSV if available, otherwise look up
+                class_name = sample.get('class_name', self.get_class_name(class_id))
                 details.append(html.P([html.Strong("Class: "), f"{class_id}: {class_name}"]))
             details.append(html.P([
                 html.Strong("UMAP Coords: "),
@@ -742,7 +755,7 @@ class DMD2Visualizer:
                                     html.Span(dist_text, className="text-muted small"),
                                     html.Br(),
                                     html.Span(
-                                        f"{int(neighbor_sample['class_label'])}: {self.get_class_name(int(neighbor_sample['class_label']))}",
+                                        f"{int(neighbor_sample['class_label'])}: {neighbor_sample.get('class_name', self.get_class_name(int(neighbor_sample['class_label'])))}",
                                         className="small"
                                     ) if 'class_label' in neighbor_sample else None,
                                 ])

@@ -72,6 +72,52 @@ python process_embeddings.py \
 ./run_visualizer.sh imagenet --port 8050
 ```
 
+## Real ImageNet Extraction (NPZ Format)
+
+Extract activations from real ImageNet64 images (10-100x faster than JPEG):
+
+```bash
+# Download ImageNet64 NPZ files first
+# Place in: data/Imagenet64_train_npz/
+
+# Quick test: 1000 samples from all classes
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 1000 \
+  --batch_size 128 \
+  --device mps
+
+# Class-balanced: 100 classes, 50 samples each (5000 total)
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 5000 \
+  --num_classes 100 \
+  --batch_size 128
+
+# Specific classes: animals (classes 0-9)
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 1000 \
+  --target_classes "0,1,2,3,4,5,6,7,8,9" \
+  --batch_size 128
+
+# Process embeddings
+python process_embeddings.py \
+  --model imagenet_real \
+  --n_neighbors 25 \
+  --min_dist 0.1
+
+# Launch visualizer
+./run_visualizer.sh imagenet_real
+```
+
+**Performance**: ~2000-5000 samples/sec on GPU, ~300-500 on MPS
+
+See `REAL_IMAGENET_GUIDE.md` for JPEG format and full documentation.
+
 ## Troubleshooting
 
 **Import errors**: `pip install -r requirements.txt` (from visualizer/)

@@ -47,15 +47,14 @@ data/Imagenet64_train_npz/
 ```bash
 cd visualizer
 
-# Extract from 10,000 training images (fast!)
+# Extract from 10,000 training images 
 python extract_real_imagenet.py \
-  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --checkpoint_path ../checkpoints/imagenet_fid1.51.pth  \
   --npz_dir data/Imagenet64_train_npz \
   --num_samples 10000 \
   --batch_size 128 \
   --layers encoder_bottleneck,midblock \
-  --device cuda \
-  --conditioning_sigma 0.0  # Default: clean reconstruction
+  --conditioning_sigma 80.0
 ```
 
 **Performance**: ~2000-5000 samples/sec on V100 GPU
@@ -94,7 +93,7 @@ python extract_real_imagenet.py \
   --layers encoder_bottleneck,midblock \
   --split val \
   --device cuda \
-  --conditioning_sigma 0.0  # Default: clean reconstruction
+  --conditioning_sigma 80.0  # Matches DMD2 training/generation
 ```
 
 **Performance**: ~100-500 samples/sec (slower due to disk I/O)
@@ -135,8 +134,8 @@ python extract_real_imagenet.py \
   --num_samples N             # Default: 1000
   --batch_size N              # Default: 64
   --layers L1,L2,...          # Default: "encoder_bottleneck,midblock"
-  --conditioning_sigma SIGMA  # Default: 0.0
-  --split {val,train}         # Default: "val" (JPEG only, ignored for NPZ)
+  --conditioning_sigma SIGMA  # Default: 80.0
+  --split {val,train}         # Default: "train" (JPEG only, ignored for NPZ)
   --seed N                    # Default: 10
   --device {cuda,mps,cpu}     # Default: auto-detect
 ```
@@ -174,10 +173,10 @@ python extract_real_imagenet.py \
 - **Note**: Ignored when using `--npz_dir` (NPZ is train-only)
 
 **--conditioning_sigma**: Forward pass sigma
-- **Default: 0.0** (clean reconstruction - captures original ImageNet manifold)
-- `0.0`: Model acts as near-identity, minimal transformation
-- `80.0`: High noise level (only use if comparing with generated images at same sigma)
-- **Why 0.0?** DMD2 is trained with reconstruction loss on real images. At sigma=0.0, the EDM preconditioning makes c_skip=1.0 and c_out=0.0, so output ≈ input. This captures the "original voxel-space manifold" that DMD2 learned to match.
+- **Default: 80.0** (matches DMD2 training and generation)
+- `80.0`: Standard conditioning used in DMD2 training/generation
+- This value matches the `conditioning_sigma` used during DMD2 training (train_edm.py default)
+- **Why 80.0?** DMD2 generator is trained to produce images from `noise * 80.0` at timestep 80.0. Using the same sigma for real images ensures activations are extracted in the same feature space as generated images, enabling proper comparison.
 
 ## Metadata Format
 
@@ -294,33 +293,48 @@ python process_embeddings.py \
 # python project_to_real_space.py ...
 ```
 
-### 3. Class-Balanced Sampling
+### 3. Class-Balanced Sampling (NPZ Format)
 
-**For NPZ format**: NPZ files already have balanced class distribution. Just use `--num_samples` to control total.
+**Built-in class-balanced sampling** enables controlled extraction from specific ImageNet classes:
 
-**For JPEG format**: Sample manually across synset directories:
+```bash
+# Extract 5000 samples from 100 random classes (~50 samples per class)
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 5000 \
+  --num_classes 100 \
+  --batch_size 128 \
+  --device mps
 
-```python
-from pathlib import Path
-import random
+# Extract from specific classes (e.g., animals: classes 0-9)
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 1000 \
+  --target_classes "0,1,2,3,4,5,6,7,8,9" \
+  --batch_size 128
 
-imagenet_val = Path("/path/to/imagenet/val")
-synsets = sorted([d for d in imagenet_val.iterdir() if d.is_dir()])
-
-# Sample N images per class
-n_per_class = 10
-selected = []
-for synset_dir in synsets:
-    images = list(synset_dir.glob("*.JPEG"))
-    selected.extend(random.sample(images, min(n_per_class, len(images))))
-
-# Write to file list
-with open("selected_images.txt", "w") as f:
-    for img in selected:
-        f.write(f"{img}\n")
+# Balanced extraction from all 1000 classes
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_*.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 10000 \
+  --num_classes 1000 \
+  --batch_size 256
 ```
 
-Then modify `extract_real_imagenet.py` to read from this file.
+**Parameters:**
+- `--num_classes`: Number of classes to sample from (default: 1000)
+- `--target_classes`: Comma-separated class IDs. If not specified, randomly selects `num_classes`
+
+**Algorithm:**
+- Calculates `samples_per_class = num_samples // num_classes`
+- Iterates through NPZ files sequentially
+- Collects samples until each target class has ~`samples_per_class`
+- Stops early once quota met (efficient)
+
+**Output:** Prints class distribution statistics (min/max/mean samples per class)
 
 ## Troubleshooting
 
