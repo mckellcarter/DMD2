@@ -136,10 +136,12 @@ def extract_real_imagenet_activations(
     batch_size: int,
     layers: List[str],
     conditioning_sigma: float = 0.0,
-    split: str = "val",
+    split: str = "train",
     seed: int = 10,
     device: str = None,
-    npz_dir: Optional[Path] = None
+    npz_dir: Optional[Path] = None,
+    num_classes: int = 1000,
+    target_classes: Optional[List[int]] = None
 ):
     """
     Extract activations from real ImageNet images.
@@ -156,6 +158,8 @@ def extract_real_imagenet_activations(
         seed: Random seed for shuffling
         device: Device to use (auto-detect if None)
         npz_dir: Directory containing ImageNet64 NPZ files (alternative to imagenet_dir)
+        num_classes: Number of classes to sample from (default: 1000, all classes)
+        target_classes: Specific class IDs to sample from. If None, randomly selects num_classes.
     """
     # Auto-detect device if not specified
     if device is None:
@@ -198,7 +202,11 @@ def extract_real_imagenet_activations(
 
     if use_npz:
         # Load from NPZ files
-        npz_files = sorted(list(npz_dir.glob('*.npz')))
+        # Sort numerically by batch number (not alphabetically)
+        npz_files = sorted(
+            list(npz_dir.glob('*.npz')),
+            key=lambda p: int(p.stem.split('_')[-1])
+        )
         if len(npz_files) == 0:
             raise FileNotFoundError(f"No NPZ files found in {npz_dir}")
 
@@ -215,20 +223,56 @@ def extract_real_imagenet_activations(
 
         print(f"Total {total_npz_samples:,} samples across {len(npz_files)} NPZ files")
 
-        # Generate sample indices
+        # Select target classes
         set_seed(seed)
-        all_indices = np.arange(total_npz_samples)
-        np.random.shuffle(all_indices)
-        selected_indices = all_indices[:num_samples]
+        if target_classes is None:
+            # Randomly select num_classes from all 1000 classes
+            target_classes = sorted(np.random.choice(1000, size=min(num_classes, 1000), replace=False).tolist())
+        else:
+            # Use provided classes
+            target_classes = sorted(target_classes)
 
-        print(f"Processing {len(selected_indices):,} samples")
+        print(f"Sampling from {len(target_classes)} classes: {target_classes[:10]}{'...' if len(target_classes) > 10 else ''}")
+
+        # Class-balanced sampling: collect ~samples_per_class from each target class
+        samples_per_class = num_samples // len(target_classes)
+        print(f"Target: ~{samples_per_class} samples per class")
+
+        # Track counts per class
+        class_counts = {c: 0 for c in target_classes}
+        selected_indices = []
 
         # Create mapping: global_idx -> (npz_file_idx, within_file_idx)
         idx_to_npz = []
-        cumsum = 0
         for file_idx, batch_sz in enumerate(npz_batch_sizes):
             for within_idx in range(batch_sz):
                 idx_to_npz.append((file_idx, within_idx))
+
+        # Iterate through NPZ files and collect samples
+        global_idx = 0
+        for file_idx, npz_file in enumerate(npz_files):
+            if len(selected_indices) >= num_samples:
+                break
+
+            # Load labels from this NPZ file
+            data = np.load(npz_file)
+            labels_1indexed = data['labels']
+            labels_0indexed = labels_1indexed - 1  # Convert to 0-indexed
+
+            # Check each sample in this file
+            for within_idx, label in enumerate(labels_0indexed):
+                if label in target_classes and class_counts[label] < samples_per_class:
+                    selected_indices.append(global_idx)
+                    class_counts[label] += 1
+
+                    # Stop if we have enough samples
+                    if len(selected_indices) >= num_samples:
+                        break
+
+                global_idx += 1
+
+        print(f"Collected {len(selected_indices):,} samples")
+        print(f"Class distribution: min={min(class_counts.values())}, max={max(class_counts.values())}, mean={np.mean(list(class_counts.values())):.1f}")
 
         all_image_paths = None  # Not used for NPZ
 
@@ -617,13 +661,13 @@ def main():
     parser.add_argument(
         "--conditioning_sigma",
         type=float,
-        default=0.0,
-        help="Conditioning sigma for forward pass (0.0 = clean reconstruction, 80.0 = generation)"
+        default=80.0,
+        help="Conditioning sigma for forward pass (default: 80.0, matches DMD2 training/generation)"
     )
     parser.add_argument(
         "--split",
         type=str,
-        default="val",
+        default="train",
         choices=["val", "train"],
         help="ImageNet split to process"
     )
@@ -640,6 +684,18 @@ def main():
         choices=["cuda", "mps", "cpu"],
         help="Device to use (auto-detect if not specified)"
     )
+    parser.add_argument(
+        "--num_classes",
+        type=int,
+        default=1000,
+        help="Number of classes to sample from (default: 1000, all classes)"
+    )
+    parser.add_argument(
+        "--target_classes",
+        type=str,
+        default=None,
+        help="Comma-separated list of class IDs to sample from (e.g., '0,1,2'). If not specified, randomly selects num_classes."
+    )
 
     args = parser.parse_args()
 
@@ -655,6 +711,11 @@ def main():
     npz_dir = Path(args.npz_dir) if args.npz_dir else None
     layers = args.layers.split(",")
 
+    # Parse target_classes
+    target_classes = None
+    if args.target_classes:
+        target_classes = [int(c.strip()) for c in args.target_classes.split(",")]
+
     extract_real_imagenet_activations(
         checkpoint_path=args.checkpoint_path,
         imagenet_dir=imagenet_dir,
@@ -666,7 +727,9 @@ def main():
         split=args.split,
         seed=args.seed,
         device=args.device,
-        npz_dir=npz_dir
+        npz_dir=npz_dir,
+        num_classes=args.num_classes,
+        target_classes=target_classes
     )
 
 
