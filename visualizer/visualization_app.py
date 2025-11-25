@@ -80,7 +80,11 @@ class DMD2Visualizer:
 
     def load_class_labels(self):
         """Load ImageNet class labels."""
-        label_path = self.data_dir / "imagenet_class_labels.json"
+        # Try ImageNet64-specific labels first (for NPZ data), fall back to standard
+        label_path = self.data_dir / "imagenet64_class_labels.json"
+        if not label_path.exists():
+            label_path = self.data_dir / "imagenet_class_labels.json"
+
         if label_path.exists():
             with open(label_path, 'r') as f:
                 raw_labels = json.load(f)
@@ -96,6 +100,16 @@ class DMD2Visualizer:
         if class_id in self.class_labels:
             return self.class_labels[class_id]
         return f"Unknown class {class_id}"
+
+    def get_sample_class_name(self, sample):
+        """Get class name from sample, handling NaN values."""
+        if 'class_label' not in sample:
+            return None
+        class_id = int(sample['class_label'])
+        class_name = sample.get('class_name')
+        if class_name is None or (isinstance(class_name, float) and pd.isna(class_name)):
+            class_name = self.get_class_name(class_id)
+        return class_name
 
     def load_data(self):
         """Load embeddings or prepare for generation."""
@@ -466,10 +480,9 @@ class DMD2Visualizer:
                 html.Span(sample['sample_id'], className="small")
             ]))
 
-            if 'class_label' in sample:
+            class_name = self.get_sample_class_name(sample)
+            if class_name is not None:
                 class_id = int(sample['class_label'])
-                # Use class_name from CSV if available, otherwise look up
-                class_name = sample.get('class_name', self.get_class_name(class_id))
                 details.append(html.Div([
                     html.Strong("Class: "),
                     html.Span(f"{class_id}: {class_name}", className="small")
@@ -556,10 +569,9 @@ class DMD2Visualizer:
 
                 details = []
                 details.append(html.P([html.Strong("Sample ID: "), sample['sample_id']]))
-                if 'class_label' in sample:
+                class_name = self.get_sample_class_name(sample)
+                if class_name is not None:
                     class_id = int(sample['class_label'])
-                    # Use class_name from CSV if available, otherwise look up
-                    class_name = sample.get('class_name', self.get_class_name(class_id))
                     details.append(html.P([html.Strong("Class: "), f"{class_id}: {class_name}"]))
                 details.append(html.P([
                     html.Strong("UMAP Coords: "),
@@ -637,10 +649,9 @@ class DMD2Visualizer:
 
             details = []
             details.append(html.P([html.Strong("Sample ID: "), sample['sample_id']]))
-            if 'class_label' in sample:
+            class_name = self.get_sample_class_name(sample)
+            if class_name is not None:
                 class_id = int(sample['class_label'])
-                # Use class_name from CSV if available, otherwise look up
-                class_name = sample.get('class_name', self.get_class_name(class_id))
                 details.append(html.P([html.Strong("Class: "), f"{class_id}: {class_name}"]))
             details.append(html.P([
                 html.Strong("UMAP Coords: "),
@@ -755,9 +766,9 @@ class DMD2Visualizer:
                                     html.Span(dist_text, className="text-muted small"),
                                     html.Br(),
                                     html.Span(
-                                        f"{int(neighbor_sample['class_label'])}: {neighbor_sample.get('class_name', self.get_class_name(int(neighbor_sample['class_label'])))}",
+                                        f"{int(neighbor_sample['class_label'])}: {self.get_sample_class_name(neighbor_sample)}",
                                         className="small"
-                                    ) if 'class_label' in neighbor_sample else None,
+                                    ) if self.get_sample_class_name(neighbor_sample) is not None else None,
                                 ])
                             ], width=8)
                         ])
@@ -983,6 +994,8 @@ class DMD2Visualizer:
                 class_label = None
                 if 'class_label' in self.df.columns:
                     class_label = int(self.df.iloc[selected_idx]['class_label'])
+                    print(f"Using class_label from selected sample: {class_label}")
+                #class_label = -1
 
                 # Create extractor to capture actual activations during generation
                 extractor = ActivationExtractor("imagenet")
@@ -992,7 +1005,7 @@ class DMD2Visualizer:
                     self.generator,
                     mask,
                     class_label=class_label,
-                    conditioning_sigma=80.0,
+                    conditioning_sigma=90,
                     num_samples=1,
                     device=self.device
                 )
