@@ -1,0 +1,56 @@
+# DMD2 Local Development/Testing
+# Usage: docker-compose up -d
+# Attach: docker-compose exec dmd2 bash
+
+#version: '3.8'
+
+services:
+  dmd2:
+    build:
+      context: .
+      platforms:
+        - linux/amd64
+    image: mckellcarter/dmd2-train:latest
+    platform: linux/amd64
+    container_name: dmd2-train
+
+    # GPU access
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # Mount data and checkpoints
+    volumes:
+      - ./:/workspace/DMD2                    # Live code changes
+      - ${DATA_PATH:-./data}:/data            # ImageNet dataset
+      - ${CKPT_PATH:-./checkpoints}:/checkpoints  # Model checkpoints
+      - ${OUTPUT_PATH:-./outputs}:/outputs    # Training outputs
+
+    # Environment
+    environment:
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NCCL_DEBUG=INFO
+
+    # Ports
+    ports:
+      - "6006:6006"   # TensorBoard
+      - "7860:7860"   # Gradio (visualizer)
+      - "2222:22"     # SSH
+
+    # Keep running
+    stdin_open: true
+    tty: true
+
+    # Working directory
+    working_dir: /workspace/DMD2
+
+    # Shared memory for DataLoader workers
+    shm_size: '16gb'
+
+    # IPC for NCCL
+    ipc: host
