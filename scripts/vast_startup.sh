@@ -15,7 +15,7 @@
 
 set -e
 
-WANDB_ENTITY=${1:-"mckellcarter-university-of-colorado-boulder"}
+WANDB_ENTITY=${1:-""}  # Leave empty to use wandb default (logged-in user/team)
 WANDB_PROJECT=${2:-"dmd2_10step"}
 HF_DATASET_REPO=${3:-"mckell/imagenet-64-lmdb"}
 NUM_GPUS=${4:-8}
@@ -95,6 +95,14 @@ echo "======================================"
 # Launch training
 # NOTE: batch_size=4 works for RTX 3090 (24GB). For A100 (80GB), try batch_size=16
 # NOTE: Mixed precision (fp16/bf16) causes dtype issues with EDM network, using fp32
+# NOTE: num_workers=0 avoids LMDB multiprocessing issues
+
+# Build wandb entity arg only if set
+WANDB_ENTITY_ARG=""
+if [ -n "$WANDB_ENTITY" ]; then
+    WANDB_ENTITY_ARG="--wandb_entity $WANDB_ENTITY"
+fi
+
 torchrun --nproc_per_node $NUM_GPUS --nnodes 1 main/edm/train_edm_multistep.py \
     --generator_lr 5e-7 \
     --guidance_lr 5e-7 \
@@ -109,7 +117,7 @@ torchrun --nproc_per_node $NUM_GPUS --nnodes 1 main/edm/train_edm_multistep.py \
     --seed 10 \
     --model_id $DATA_PATH/edm-imagenet-64x64-cond-adm.pkl \
     --wandb_iters 100 \
-    --wandb_entity $WANDB_ENTITY \
+    $WANDB_ENTITY_ARG \
     --wandb_project $WANDB_PROJECT \
     --wandb_name "imagenet_10step_$(date +%Y%m%d_%H%M%S)" \
     --real_image_path $DATA_PATH/imagenet-64x64_lmdb \
@@ -124,4 +132,5 @@ torchrun --nproc_per_node $NUM_GPUS --nnodes 1 main/edm/train_edm_multistep.py \
     --denoising \
     --num_denoising_step 10 \
     --backward_simulation \
-    --label_dropout 0.1
+    --label_dropout 0.1 \
+    --num_workers 0
