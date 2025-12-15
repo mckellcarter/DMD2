@@ -70,10 +70,10 @@ def draw_probability_histogram(data):
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
 
-    # Get the canvas as a PIL image
-    image = Image.frombytes(
-        "RGB", canvas.get_width_height(), canvas.tostring_rgb()
-    )
+    # Get the canvas as a PIL image (compatible with matplotlib 3.8+)
+    buf = canvas.buffer_rgba()
+    image = Image.frombuffer("RGBA", canvas.get_width_height(), buf, "raw", "RGBA", 0, 1)
+    image = image.convert("RGB")
     plt.close('all')
     return image
 
@@ -100,10 +100,10 @@ def draw_gradient_norm(data, pred_realism, num_bin=10, bin_size=0.1):
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
 
-    # Get the canvas as a PIL image
-    image = Image.frombytes(
-        "RGB", canvas.get_width_height(), canvas.tostring_rgb()
-    )
+    # Get the canvas as a PIL image (compatible with matplotlib 3.8+)
+    buf = canvas.buffer_rgba()
+    image = Image.frombuffer("RGBA", canvas.get_width_height(), buf, "raw", "RGBA", 0, 1)
+    image = image.convert("RGB")
     plt.close('all')
     return image
 
@@ -122,10 +122,10 @@ def draw_array(indices, values, min_val=None, max_val=None):
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
 
-    # Get the canvas as a PIL image
-    image = Image.frombytes(
-        "RGB", canvas.get_width_height(), canvas.tostring_rgb()
-    )
+    # Get the canvas as a PIL image (compatible with matplotlib 3.8+)
+    buf = canvas.buffer_rgba()
+    image = Image.frombuffer("RGBA", canvas.get_width_height(), buf, "raw", "RGBA", 0, 1)
+    image = image.convert("RGB")
     plt.close('all')
     return image
 
