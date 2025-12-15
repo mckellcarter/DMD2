@@ -15,7 +15,7 @@
 
 set -e
 
-WANDB_ENTITY=${1:-"mckellcarter-university-of-colorado-boulder-org"}
+WANDB_ENTITY=${1:-"mckellcarter-university-of-colorado-boulder"}
 WANDB_PROJECT=${2:-"dmd2_10step"}
 HF_DATASET_REPO=${3:-"mckell/imagenet-64-lmdb"}
 NUM_GPUS=${4:-8}
