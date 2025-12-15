@@ -95,7 +95,7 @@ echo "======================================"
 # Launch training
 # NOTE: batch_size=4 works for RTX 3090 (24GB). For A100 (80GB), try batch_size=16
 # NOTE: Mixed precision (fp16/bf16) causes dtype issues with EDM network, using fp32
-# NOTE: num_workers=0 avoids LMDB multiprocessing issues
+# NOTE: LMDB uses lazy init for multiprocessing compatibility (num_workers > 0 OK)
 
 # Build wandb entity arg only if set
 WANDB_ENTITY_ARG=""
@@ -133,4 +133,4 @@ torchrun --nproc_per_node $NUM_GPUS --nnodes 1 main/edm/train_edm_multistep.py \
     --num_denoising_step 10 \
     --backward_simulation \
     --label_dropout 0.1 \
-    --num_workers 0
+    --num_workers 4
