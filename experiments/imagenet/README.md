@@ -49,7 +49,7 @@ python main/edm/test_folder_edm.py \
     --wandb_entity $WANDB_ENTITY \
     --wandb_project $WANDB_PROJECT \
     --resolution 64 --label_dim 1000  \
-    --ref_path $CHECKPOINT_PATH/imagenet_fid_refs_edm.npz \
+    --ref_path $CHECKPOINT_PATH/imagenet_fid_refs_edm.npz \3
     --detector_url $CHECKPOINT_PATH/inception-2015-12-05.pkl 
 ```
 

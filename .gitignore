@@ -195,3 +195,5 @@ checkpoints/
 *.weights
 model_*.pth
 checkpoint_*.pth
+.DS_Store
+10step_model_train_out/
