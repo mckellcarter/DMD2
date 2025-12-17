@@ -39,7 +39,7 @@ python extract_real_imagenet.py \
   --num_samples 1000 \
   --batch_size 64 \
   --layers encoder_bottleneck,midblock \
-  --conditioning_sigma 0.0 \
+  --conditioning_sigma 80.0 \
   --device cuda
 ```
 
@@ -53,7 +53,7 @@ python extract_real_imagenet.py \
   --num_samples 10000 \
   --batch_size 128 \
   --layers encoder_bottleneck,midblock \
-  --conditioning_sigma 0.0 \
+  --conditioning_sigma 80.0 \
   --seed 42 \
   --device cuda
 ```
@@ -69,7 +69,7 @@ python extract_real_imagenet.py \
 - `--num_samples N`: Number of samples to process (default: 1000)
 - `--batch_size N`: Processing batch size (default: 64)
 - `--layers L1,L2`: Layers to extract (default: `encoder_bottleneck,midblock`)
-- `--conditioning_sigma SIGMA`: Forward pass sigma (default: 0.0)
+- `--conditioning_sigma SIGMA`: Forward pass sigma (default: 80.0, matches DMD2 training)
 - `--seed N`: Random seed for shuffling (default: 10)
 - `--device {cuda,mps,cpu}`: Device (default: auto-detect)
 
@@ -237,12 +237,12 @@ Ensure files follow naming pattern: `train_data_batch_*.npz`
 # After conversion: 0-999 (correct for DMD2)
 ```
 
-### Issue: Different conditioning_sigma
+### Conditioning Sigma
 
-For **real ImageNet** comparison, use:
-- `--conditioning_sigma 0.0` (default, recommended)
-- Captures original voxel-space manifold
-- For generated comparison, match generator sigma
+For **real ImageNet** comparison with generated images:
+- `--conditioning_sigma 80.0` (default, recommended)
+- Matches DMD2 training and generation conditioning
+- Ensures real and generated activations are in the same feature space
 
 ## Use Cases
 

@@ -18,6 +18,7 @@ import argparse
 import pickle
 import torch
 from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import pairwise_distances
 
 # For dynamic UMAP recalculation
 from process_embeddings import compute_umap, load_dataset_activations
@@ -134,6 +135,9 @@ class DMD2Visualizer:
                     self.umap_reducer = model_data['reducer']
                     self.umap_scaler = model_data['scaler']
                 print("UMAP model loaded (inverse_transform available)")
+                ##Debug, don't need to load activations here. 
+                if self.activations is None:
+                    self.activations, self.metadata_df = self.load_activations_for_model("imagenet_real")
             else:
                 print(f"Warning: UMAP model not found at {model_path}")
                 print("Generation from neighbors will not be available")
@@ -196,11 +200,11 @@ class DMD2Visualizer:
                                 id="model-selector",
                                 options=[
                                     {"label": "ImageNet-64x64", "value": "imagenet"},
-                                    {"label": "SDXL-1024", "value": "sdxl"},
-                                    {"label": "SDv1.5-512", "value": "sdv1.5"}
+                                    #{"label": "SDXL-1024", "value": "sdxl"},
+                                    #{"label": "SDv1.5-512", "value": "sdv1.5"}
                                 ],
                                 value=self.umap_params.get("model", "imagenet") if self.umap_params else "imagenet",
-                                className="mb-3"
+                                className="mb-3",
                             ),
 
                             # UMAP parameters
@@ -213,7 +217,8 @@ class DMD2Visualizer:
                                 step=5,
                                 value=self.umap_params.get("n_neighbors", 15) if self.umap_params else 15,
                                 marks={5: "5", 25: "25", 50: "50", 75: "75", 100: "100"},
-                                tooltip={"placement": "bottom", "always_visible": True}
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                disabled=True
                             ),
 
                             html.Label("UMAP min_dist", className="mt-3"),
@@ -224,7 +229,8 @@ class DMD2Visualizer:
                                 step=0.05,
                                 value=self.umap_params.get("min_dist", 0.1) if self.umap_params else 0.1,
                                 marks={0.0: "0.0", 0.25: "0.25", 0.5: "0.5", 0.75: "0.75", 1.0: "1.0"},
-                                tooltip={"placement": "bottom", "always_visible": True}
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                disabled=True
                             ),
 
                             # Recalculate button
@@ -233,7 +239,8 @@ class DMD2Visualizer:
                                 "Recalculate UMAP",
                                 id="recalculate-btn",
                                 color="primary",
-                                className="w-100 mb-2"
+                                className="w-100 mb-2",
+                                disabled=True
                             ),
 
                             # Export button
@@ -241,7 +248,8 @@ class DMD2Visualizer:
                                 "Export Data",
                                 id="export-btn",
                                 color="secondary",
-                                className="w-100"
+                                className="w-100",
+                                disabled=True
                             ),
                             dcc.Download(id="download-data"),
 
@@ -916,17 +924,43 @@ class DMD2Visualizer:
                     return "Error: No neighbors selected", dash.no_update, dash.no_update
 
                 # Calculate center of neighbors in UMAP space
+                print(all_neighbors)
                 neighbor_coords = self.df.iloc[all_neighbors][['umap_x', 'umap_y']].values
                 center_2d = np.mean(neighbor_coords, axis=0).reshape(1, -1)
 
                 status_msg = f"Calculating center from {len(all_neighbors)} neighbors..."
                 print(status_msg)
-
+                print(f"Neighbor Coords: {neighbor_coords}")
+                print(f"2d center: {center_2d}---")
+                
                 # Inverse transform to activation space
                 if self.umap_reducer is None:
                     return "Error: UMAP model not loaded", dash.no_update, dash.no_update
 
+                print("Inverting umap for new point: ")
                 center_activation = self.umap_reducer.inverse_transform(center_2d)
+
+                #######debug inversion ################
+                print(center_activation.shape)
+                first_neighbor_act = self.activations[all_neighbors[0],][np.newaxis,:]
+                print(first_neighbor_act.shape)
+                inv_proj_dist = pairwise_distances(first_neighbor_act, center_activation, metric='euclidean') #calculate distance from inverted point to first manual neighbor (to check inversion accuracy with a single neighbor)
+                print(f"Distance from center to manual neighbor1 in vector space is: {inv_proj_dist}")
+                
+                all_act_proj = self.umap_reducer.transform(self.activations)
+                all_proj_mask = np.all(all_act_proj == neighbor_coords[0,][np.newaxis], axis=1) #is there a projection that matches the old projection target? 
+                matching_indices = np.where(all_proj_mask) #what is the index of the matching embed? 
+                print(f"Embedding match at index: {matching_indices}")
+                
+                
+                re_proj_embedded = self.umap_reducer.transform(first_neighbor_act)
+                re_re_proj_embedded = self.umap_reducer.transform(first_neighbor_act)
+                re_proj_dist = pairwise_distances(re_proj_embedded, neighbor_coords[0,:][np.newaxis,:], metric='euclidean')
+                print(f"Dist {re_proj_embedded} to {neighbor_coords[0,:][np.newaxis,:]}, center is {center_2d}, reprojected first neigh act (check embedding same point to same place) is: {re_proj_dist}")
+                
+                re_re_proj_dist = pairwise_distances(re_proj_embedded, re_re_proj_embedded, metric='euclidean')
+                print(f"Dist first neighbor, re-reprojected first neigh act (check embedding same point to same place) is: {re_re_proj_dist}")
+                #######################
 
                 # Un-normalize if scaler was used
                 if self.umap_scaler is not None:
@@ -983,7 +1017,9 @@ class DMD2Visualizer:
                 # Create activation mask
                 mask = ActivationMask(model_type="imagenet")
                 for layer_name, activation in activation_dict.items():
-                    mask.set_mask(layer_name, activation)
+                    #if layer_name == "encoder_bottleneck":
+                        print(layer_name)
+                        mask.set_mask(layer_name, activation)
 
                 # Register hooks
                 mask.register_hooks(self.generator, list(activation_dict.keys()))
@@ -1005,7 +1041,7 @@ class DMD2Visualizer:
                     self.generator,
                     mask,
                     class_label=class_label,
-                    conditioning_sigma=90,
+                    conditioning_sigma=80,
                     num_samples=1,
                     device=self.device
                 )

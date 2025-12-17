@@ -51,10 +51,26 @@ def load_dataset_activations(
 
     # First pass: determine activation shape
     first_sample = samples[0]
-    first_path = activation_dir / f"{first_sample['sample_id']}.npz"
+
+    # Handle both batch format (activation_path) and old format (sample_id)
+    if 'activation_path' in first_sample:
+        # New format: batch files
+        # activation_path is relative to data root (e.g., "activations/imagenet_real/batch_000000")
+        # activation_dir is "data/activations/imagenet_real", so data root is activation_dir.parent.parent
+        data_root = activation_dir.parent.parent
+        first_path = data_root / first_sample['activation_path']
+        first_batch_index = first_sample['batch_index']
+    else:
+        # Old format: individual sample files
+        first_path = activation_dir / f"{first_sample['sample_id']}.npz"
+        first_batch_index = 0
+
     first_act, _ = load_activations(first_path)
     first_flat = flatten_activations(first_act)
     activation_dim = first_flat.shape[1]
+
+    # For batch format, we only need the dimension from one sample
+    # (first_batch_index is used to know which sample, but shape is the same)
 
     # Preallocate array (memory-mapped if low_memory)
     if low_memory:
@@ -83,16 +99,19 @@ def load_dataset_activations(
             # Get batch path and index from metadata
             if 'batch_index' in sample:
                 # New format: batch files
+                # activation_path is relative to data root
                 act_path_str = sample['activation_path']
                 batch_index = sample['batch_index']
-                act_path = activation_dir.parent / act_path_str
+                data_root = activation_dir.parent.parent
+                act_path = data_root / act_path_str
             else:
                 # Old format: individual sample files (backwards compatibility)
                 act_path = activation_dir / f"{sample_id}.npz"
                 batch_index = 0
 
-            if not act_path.exists():
-                print(f"Warning: Missing {act_path}")
+            # Check if file exists (add .npz extension for batch format)
+            if not act_path.with_suffix('.npz').exists():
+                print(f"Warning: Missing {act_path.with_suffix('.npz')}")
                 continue
 
             # Load activations (use cache for batch files)
@@ -125,6 +144,16 @@ def load_dataset_activations(
     metadata_df = pd.DataFrame(metadata_records)
 
     print(f"Loaded activations: {activation_matrix.shape}")
+
+    # Check for NaN/inf values and handle them
+    nan_count = np.isnan(activation_matrix).sum()
+    inf_count = np.isinf(activation_matrix).sum()
+
+    if nan_count > 0 or inf_count > 0:
+        print(f"Warning: Found {nan_count} NaN and {inf_count} inf values")
+        print("Replacing NaN/inf with 0...")
+        activation_matrix = np.nan_to_num(activation_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
     return activation_matrix, metadata_df
 
 
@@ -247,7 +276,7 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["imagenet", "sdxl", "sdv1.5"],
+        choices=["imagenet", "imagenet_real", "sdxl", "sdv1.5"],
         help="Model type"
     )
     parser.add_argument(
