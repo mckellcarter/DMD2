@@ -261,7 +261,7 @@ python extract_real_imagenet.py \
   --batch_size 128 \
   --layers encoder_bottleneck,midblock \
   --device cuda \
-  --conditioning_sigma 0.0  # Default: clean reconstruction
+  --conditioning_sigma 80.0  # Matches DMD2 training/generation
 ```
 
 **NPZ format details**: See `NPZ_EXTRACTION_GUIDE.md` for full documentation.
@@ -278,13 +278,13 @@ python extract_real_imagenet.py \
   --layers encoder_bottleneck,midblock \
   --split val \
   --device cuda \
-  --conditioning_sigma 0.0  # Default: clean reconstruction
+  --conditioning_sigma 80.0  # Matches DMD2 training/generation
 ```
 
 **Conditioning Sigma**:
-- `--conditioning_sigma 0.0` (default): Clean reconstruction - captures original ImageNet manifold
-- `--conditioning_sigma 80.0`: High noise level - matches generated image processing
-- Use 0.0 for fitting UMAP on real images, 80.0 only if comparing with generated at same noise level
+- `--conditioning_sigma 80.0` (default): Matches DMD2 training and generation conditioning
+- This ensures real and generated image activations are extracted in the same feature space
+- Value matches the default used in `train_edm.py` and `imagenet_example.py`
 
 **Expected ImageNet structure**:
 ```
@@ -314,7 +314,7 @@ data/
     └── dataset_info.json  # Global metadata
 ```
 
-**Reconstructed Images**: At sigma=0.0, DMD2 acts nearly as identity (c_skip=1.0, c_out=0.0), so reconstructed images should closely match originals. Compare these to verify model behavior.
+**Reconstructed Images**: The `imagenet_real_reconstructed` directory contains images processed through DMD2 at the specified conditioning sigma. These are useful for qualitative evaluation of the model's reconstruction/generation behavior.
 
 **Batch metadata format**:
 Each batch JSON file includes ImageNet identifiers:
