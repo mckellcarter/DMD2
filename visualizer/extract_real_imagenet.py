@@ -177,8 +177,11 @@ def extract_real_imagenet_activations(
     extractor = ActivationExtractor(model_type="imagenet")
     extractor.register_hooks(generator, layers)
 
-    # Load ImageNet class labels
-    class_labels_path = Path(__file__).parent / "data" / "imagenet_class_labels.json"
+    # Load ImageNet class labels (use ImageNet64-specific mapping for NPZ files)
+    if npz_dir:
+        class_labels_path = Path(__file__).parent / "data" / "imagenet64_class_labels.json"
+    else:
+        class_labels_path = Path(__file__).parent / "data" / "imagenet_class_labels.json"
     with open(class_labels_path, 'r', encoding='utf-8') as f:
         class_labels_map = json.load(f)
 
