@@ -12,9 +12,20 @@ import torch
 import copy 
 import os 
 
-def prepare_images_for_saving(images_tensor, resolution, grid_size=4, range_type="neg1pos1"):
+def prepare_images_for_saving(images_tensor, resolution, grid_size=None, range_type="neg1pos1"):
     if range_type != "uint8":
         images_tensor = (images_tensor * 0.5 + 0.5).clamp(0, 1) * 255
+
+    # Auto-calculate grid size if not specified
+    n_images = images_tensor.shape[0]
+    if grid_size is None:
+        grid_size = int(np.ceil(np.sqrt(n_images)))
+
+    # Pad with black images if needed to fill grid
+    n_needed = grid_size * grid_size
+    if n_images < n_needed:
+        padding = torch.zeros(n_needed - n_images, *images_tensor.shape[1:], device=images_tensor.device)
+        images_tensor = torch.cat([images_tensor, padding], dim=0)
 
     images = images_tensor[:grid_size*grid_size].permute(0, 2, 3, 1).detach().cpu().numpy().astype("uint8")
     grid = images.reshape(grid_size, grid_size, resolution, resolution, 3)
@@ -59,10 +70,10 @@ def draw_probability_histogram(data):
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
 
-    # Get the canvas as a PIL image
-    image = Image.frombytes(
-        "RGB", canvas.get_width_height(), canvas.tostring_rgb()
-    )
+    # Get the canvas as a PIL image (compatible with matplotlib 3.8+)
+    buf = canvas.buffer_rgba()
+    image = Image.frombuffer("RGBA", canvas.get_width_height(), buf, "raw", "RGBA", 0, 1)
+    image = image.convert("RGB")
     plt.close('all')
     return image
 
@@ -89,10 +100,10 @@ def draw_gradient_norm(data, pred_realism, num_bin=10, bin_size=0.1):
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
 
-    # Get the canvas as a PIL image
-    image = Image.frombytes(
-        "RGB", canvas.get_width_height(), canvas.tostring_rgb()
-    )
+    # Get the canvas as a PIL image (compatible with matplotlib 3.8+)
+    buf = canvas.buffer_rgba()
+    image = Image.frombuffer("RGBA", canvas.get_width_height(), buf, "raw", "RGBA", 0, 1)
+    image = image.convert("RGB")
     plt.close('all')
     return image
 
@@ -111,10 +122,10 @@ def draw_array(indices, values, min_val=None, max_val=None):
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
 
-    # Get the canvas as a PIL image
-    image = Image.frombytes(
-        "RGB", canvas.get_width_height(), canvas.tostring_rgb()
-    )
+    # Get the canvas as a PIL image (compatible with matplotlib 3.8+)
+    buf = canvas.buffer_rgba()
+    image = Image.frombuffer("RGBA", canvas.get_width_height(), buf, "raw", "RGBA", 0, 1)
+    image = image.convert("RGB")
     plt.close('all')
     return image
 
