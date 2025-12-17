@@ -66,6 +66,16 @@ def create_evaluator(detector_url):
     with dnnlib.util.open_url(detector_url, verbose=False) as f:
         detector_net = pickle.load(f)
 
+    # Handle different pickle formats
+    if isinstance(detector_net, dict):
+        # Try common dict keys for the actual network
+        if 'model' in detector_net:
+            detector_net = detector_net['model']
+        elif 'net' in detector_net:
+            detector_net = detector_net['net']
+        else:
+            raise ValueError(f"Unknown detector dict format, keys: {detector_net.keys()}")
+
     detector_net.eval()
     return detector_net, detector_kwargs, feature_dim
 

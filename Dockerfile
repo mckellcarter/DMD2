@@ -50,7 +50,8 @@ RUN pip install --no-cache-dir \
     "numpy<2" \
     ninja \
     packaging \
-    pytest
+    pytest \
+    huggingface_hub[cli]
 
 # Create directories for data and checkpoints
 RUN mkdir -p /data /checkpoints /outputs
@@ -64,9 +65,10 @@ ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV NCCL_DEBUG=INFO
 ENV NCCL_IB_DISABLE=1
 ENV TORCH_DISTRIBUTED_DEBUG=DETAIL
+ENV PYTHONPATH=/workspace/DMD2:$PYTHONPATH
 
-# Make training scripts executable
-RUN chmod +x experiments/imagenet/*.sh
+# Make scripts executable
+RUN chmod +x experiments/imagenet/*.sh scripts/*.sh scripts/*.py || true
 
 # Default: keep running for vast.ai attach
 CMD ["sleep", "infinity"]

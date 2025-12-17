@@ -33,8 +33,10 @@ services:
     # Environment
     environment:
       - WANDB_API_KEY=${WANDB_API_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
       - NCCL_DEBUG=INFO
+      - PYTHONPATH=/workspace/DMD2
 
     # Ports
     ports:

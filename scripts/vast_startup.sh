@@ -11,11 +11,11 @@
 #   ./scripts/vast_startup.sh <wandb_entity> <wandb_project> [hf_dataset_repo] [num_gpus]
 #
 # Example:
-#   ./scripts/vast_startup.sh myteam dmd2_10step mckell/imagenet-64-lmdb 8
+#   ./scripts/vast_startup.sh myteam dmd2_10step mckellcarter/imagenet-64-lmdb 8
 
 set -e
 
-WANDB_ENTITY=${1:-""}  # Leave empty to use wandb default (logged-in user/team)
+WANDB_ENTITY=${1:-""}  # Leave empty to use wandb default (logged-in user)
 WANDB_PROJECT=${2:-"dmd2_10step"}
 HF_DATASET_REPO=${3:-"mckell/imagenet-64-lmdb"}
 NUM_GPUS=${4:-8}
@@ -72,9 +72,8 @@ fi
 # Create output directories
 mkdir -p $OUTPUT_PATH/imagenet_10step_denoising
 
-# Navigate to code and set PYTHONPATH
+# Navigate to code
 cd /workspace/DMD2
-export PYTHONPATH=/workspace/DMD2:$PYTHONPATH
 
 # Run tests to verify installation
 echo "Running quick tests..."
@@ -92,17 +91,14 @@ echo "======================================"
 echo "Starting Training"
 echo "======================================"
 
-# Launch training
-# NOTE: batch_size=4 works for RTX 3090 (24GB). For A100 (80GB), try batch_size=16
-# NOTE: Mixed precision (fp16/bf16) causes dtype issues with EDM network, using fp32
-# NOTE: LMDB uses lazy init for multiprocessing compatibility (num_workers > 0 OK)
-
 # Build wandb entity arg only if set
 WANDB_ENTITY_ARG=""
 if [ -n "$WANDB_ENTITY" ]; then
     WANDB_ENTITY_ARG="--wandb_entity $WANDB_ENTITY"
 fi
 
+# Launch training
+# NOTE: No --use_fp16, causes dtype errors with EDM network
 torchrun --nproc_per_node $NUM_GPUS --nnodes 1 main/edm/train_edm_multistep.py \
     --generator_lr 5e-7 \
     --guidance_lr 5e-7 \

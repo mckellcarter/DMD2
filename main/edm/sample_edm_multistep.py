@@ -255,7 +255,25 @@ def create_generator(checkpoint_path, args):
     del generator.model.map_augment
     generator.model.map_augment = None
 
-    state_dict = torch.load(checkpoint_path, map_location="cpu")
+    # Handle different checkpoint formats
+    if os.path.isdir(checkpoint_path):
+        # Accelerator checkpoint directory
+        safetensors_path = os.path.join(checkpoint_path, "model.safetensors")
+        pytorch_path = os.path.join(checkpoint_path, "pytorch_model.bin")
+
+        if os.path.exists(safetensors_path):
+            from safetensors.torch import load_file
+            state_dict = load_file(safetensors_path)
+        elif os.path.exists(pytorch_path):
+            state_dict = torch.load(pytorch_path, map_location="cpu")
+        else:
+            raise FileNotFoundError(f"No model file found in {checkpoint_path}")
+    elif checkpoint_path.endswith('.safetensors'):
+        from safetensors.torch import load_file
+        state_dict = load_file(checkpoint_path)
+    else:
+        state_dict = torch.load(checkpoint_path, map_location="cpu")
+
     print(generator.load_state_dict(state_dict, strict=True))
 
     return generator

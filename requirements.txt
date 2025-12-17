@@ -7,10 +7,9 @@ image-reward
 diffusers 
 peft 
 wandb 
-lmdb 
-transformers 
+lmdb
+transformers
 accelerate>=0.25.0 
-lmdb 
 datasets 
 evaluate  
 scipy 
