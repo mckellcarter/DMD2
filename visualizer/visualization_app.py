@@ -39,8 +39,9 @@ class DMD2Visualizer:
     """Main visualizer application."""
 
     def __init__(self, data_dir: Path, embeddings_path: Path = None, checkpoint_path: Path = None,
-                 device: str = 'cuda', num_steps: int = 1, guidance_scale: float = 1.0,
-                 sigma_max: float = 80.0, sigma_min: float = 0.002, label_dropout: float = 0.0):
+                 device: str = 'cuda', num_steps: int = 1, mask_steps: int = None,
+                 guidance_scale: float = 1.0, sigma_max: float = 80.0, sigma_min: float = 0.002,
+                 label_dropout: float = 0.0):
         """
         Args:
             data_dir: Root data directory
@@ -48,6 +49,7 @@ class DMD2Visualizer:
             checkpoint_path: Optional path to DMD2 checkpoint for generation
             device: Device for generation ('cuda', 'mps', or 'cpu')
             num_steps: Number of denoising steps (1=single-step, 4/10=multi-step)
+            mask_steps: Steps to apply activation mask (default=num_steps, 1=first-step-only)
             guidance_scale: CFG guidance scale (1.0=no guidance)
             sigma_max: Maximum sigma for denoising schedule
             sigma_min: Minimum sigma for denoising schedule
@@ -58,6 +60,7 @@ class DMD2Visualizer:
         self.checkpoint_path = checkpoint_path
         self.device = device
         self.num_steps = num_steps
+        self.mask_steps = mask_steps
         self.guidance_scale = guidance_scale
         self.sigma_max = sigma_max
         self.sigma_min = sigma_min
@@ -1054,12 +1057,14 @@ class DMD2Visualizer:
 
                 # Use multi-step or single-step generation based on config
                 if self.num_steps > 1:
-                    print(f"Using {self.num_steps}-step generation")
+                    mask_info = f", mask_steps={self.mask_steps or self.num_steps}"
+                    print(f"Using {self.num_steps}-step generation{mask_info}")
                     images, labels = generate_with_masked_activation_multistep(
                         self.generator,
                         mask,
                         class_label=class_label,
                         num_steps=self.num_steps,
+                        mask_steps=self.mask_steps,
                         sigma_max=self.sigma_max,
                         sigma_min=self.sigma_min,
                         guidance_scale=self.guidance_scale,
@@ -1261,6 +1266,12 @@ def main():
         default=0.0,
         help="Label dropout (use 0.1 for CFG-trained models)"
     )
+    parser.add_argument(
+        "--mask_steps",
+        type=int,
+        default=None,
+        help="Steps to apply activation mask (default=num_steps, use 1 for first-step-only)"
+    )
 
     args = parser.parse_args()
 
@@ -1270,6 +1281,7 @@ def main():
         checkpoint_path=args.checkpoint_path,
         device=args.device,
         num_steps=args.num_steps,
+        mask_steps=args.mask_steps,
         guidance_scale=args.guidance_scale,
         sigma_max=args.sigma_max,
         sigma_min=args.sigma_min,
