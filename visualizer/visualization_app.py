@@ -28,6 +28,7 @@ from activation_masking import ActivationMask, unflatten_activation
 from generate_from_activation import (
     create_imagenet_generator,
     generate_with_masked_activation,
+    generate_with_masked_activation_multistep,
     save_generated_sample,
     infer_activation_shape
 )
@@ -37,18 +38,30 @@ from extract_activations import ActivationExtractor
 class DMD2Visualizer:
     """Main visualizer application."""
 
-    def __init__(self, data_dir: Path, embeddings_path: Path = None, checkpoint_path: Path = None, device: str = 'cuda'):
+    def __init__(self, data_dir: Path, embeddings_path: Path = None, checkpoint_path: Path = None,
+                 device: str = 'cuda', num_steps: int = 1, guidance_scale: float = 1.0,
+                 sigma_max: float = 80.0, sigma_min: float = 0.002, label_dropout: float = 0.0):
         """
         Args:
             data_dir: Root data directory
             embeddings_path: Optional path to precomputed embeddings CSV
             checkpoint_path: Optional path to DMD2 checkpoint for generation
             device: Device for generation ('cuda', 'mps', or 'cpu')
+            num_steps: Number of denoising steps (1=single-step, 4/10=multi-step)
+            guidance_scale: CFG guidance scale (1.0=no guidance)
+            sigma_max: Maximum sigma for denoising schedule
+            sigma_min: Minimum sigma for denoising schedule
+            label_dropout: Label dropout for model config (use 0.1 for CFG models)
         """
         self.data_dir = Path(data_dir)
         self.embeddings_path = embeddings_path
         self.checkpoint_path = checkpoint_path
         self.device = device
+        self.num_steps = num_steps
+        self.guidance_scale = guidance_scale
+        self.sigma_max = sigma_max
+        self.sigma_min = sigma_min
+        self.label_dropout = label_dropout
         self.df = None
         self.umap_params = None
         self.activations = None
@@ -974,9 +987,11 @@ class DMD2Visualizer:
                         return "Error: No checkpoint path provided", dash.no_update, dash.no_update
 
                     print(f"Loading generator from {self.checkpoint_path}")
+                    print(f"Using {self.num_steps}-step generation, guidance_scale={self.guidance_scale}")
                     self.generator = create_imagenet_generator(
                         self.checkpoint_path,
-                        device=self.device
+                        device=self.device,
+                        label_dropout=self.label_dropout
                     )
                     print("Generator loaded")
 
@@ -1037,14 +1052,30 @@ class DMD2Visualizer:
                 extractor = ActivationExtractor("imagenet")
                 extractor.register_hooks(self.generator, list(activation_dict.keys()))
 
-                images, labels = generate_with_masked_activation(
-                    self.generator,
-                    mask,
-                    class_label=class_label,
-                    conditioning_sigma=80,
-                    num_samples=1,
-                    device=self.device
-                )
+                # Use multi-step or single-step generation based on config
+                if self.num_steps > 1:
+                    print(f"Using {self.num_steps}-step generation")
+                    images, labels = generate_with_masked_activation_multistep(
+                        self.generator,
+                        mask,
+                        class_label=class_label,
+                        num_steps=self.num_steps,
+                        sigma_max=self.sigma_max,
+                        sigma_min=self.sigma_min,
+                        guidance_scale=self.guidance_scale,
+                        stochastic=True,
+                        num_samples=1,
+                        device=self.device
+                    )
+                else:
+                    images, labels = generate_with_masked_activation(
+                        self.generator,
+                        mask,
+                        class_label=class_label,
+                        conditioning_sigma=self.sigma_max,
+                        num_samples=1,
+                        device=self.device
+                    )
 
                 # Get the generated activations
                 generated_activations = extractor.get_activations()
@@ -1200,6 +1231,36 @@ def main():
         choices=["cuda", "mps", "cpu"],
         help="Device for generation"
     )
+    parser.add_argument(
+        "--num_steps",
+        type=int,
+        default=1,
+        help="Number of denoising steps (1=single-step, 4/10=multi-step)"
+    )
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=1.0,
+        help="CFG guidance scale (1.0=no guidance)"
+    )
+    parser.add_argument(
+        "--sigma_max",
+        type=float,
+        default=80.0,
+        help="Maximum sigma for denoising schedule"
+    )
+    parser.add_argument(
+        "--sigma_min",
+        type=float,
+        default=0.002,
+        help="Minimum sigma for denoising schedule"
+    )
+    parser.add_argument(
+        "--label_dropout",
+        type=float,
+        default=0.0,
+        help="Label dropout (use 0.1 for CFG-trained models)"
+    )
 
     args = parser.parse_args()
 
@@ -1207,7 +1268,12 @@ def main():
         data_dir=args.data_dir,
         embeddings_path=args.embeddings,
         checkpoint_path=args.checkpoint_path,
-        device=args.device
+        device=args.device,
+        num_steps=args.num_steps,
+        guidance_scale=args.guidance_scale,
+        sigma_max=args.sigma_max,
+        sigma_min=args.sigma_min,
+        label_dropout=args.label_dropout
     )
 
     visualizer.run(debug=args.debug, port=args.port)

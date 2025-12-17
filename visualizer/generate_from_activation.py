@@ -1,0 +1,336 @@
+"""
+Generate new images from fixed activations using DMD2 models.
+Supports both single-step and multi-step generation.
+"""
+
+import torch
+import numpy as np
+from pathlib import Path
+from PIL import Image
+import json
+import os
+
+from activation_masking import ActivationMask, unflatten_activation
+
+
+def get_denoising_sigmas(num_steps, sigma_max, sigma_min, rho=7.0):
+    """
+    Generate Karras sigma schedule for multi-step denoising.
+    Returns sigmas in descending order (large to small).
+    """
+    ramp = torch.linspace(0, 1, num_steps)
+    min_inv_rho = sigma_min ** (1 / rho)
+    max_inv_rho = sigma_max ** (1 / rho)
+    sigmas = (max_inv_rho + ramp * (min_inv_rho - max_inv_rho)) ** rho
+    return sigmas
+
+
+def create_imagenet_generator(checkpoint_path, device='cuda', label_dropout=0.0):
+    """
+    Create ImageNet DMD2 generator model.
+
+    Args:
+        checkpoint_path: Path to checkpoint (.pth file, .safetensors, or directory)
+        device: Device to load model on
+        label_dropout: Label dropout rate (use >0 for CFG-trained models)
+
+    Returns:
+        Loaded generator model
+    """
+    from third_party.edm.training.networks import EDMPrecond
+    from main.edm.edm_network import get_imagenet_edm_config
+
+    base_config = {
+        "img_resolution": 64,
+        "img_channels": 3,
+        "label_dim": 1000,
+        "use_fp16": False,
+        "sigma_min": 0,
+        "sigma_max": float("inf"),
+        "sigma_data": 0.5,
+        "model_type": "DhariwalUNet"
+    }
+    base_config.update(get_imagenet_edm_config(label_dropout=label_dropout))
+
+    generator = EDMPrecond(**base_config)
+    del generator.model.map_augment
+    generator.model.map_augment = None
+
+    # Handle different checkpoint formats
+    checkpoint_path = str(checkpoint_path)
+    if os.path.isdir(checkpoint_path):
+        # Accelerator checkpoint directory (safetensors)
+        safetensors_path = os.path.join(checkpoint_path, "model.safetensors")
+        pytorch_path = os.path.join(checkpoint_path, "pytorch_model.bin")
+
+        if os.path.exists(safetensors_path):
+            from safetensors.torch import load_file
+            state_dict = load_file(safetensors_path)
+        elif os.path.exists(pytorch_path):
+            state_dict = torch.load(pytorch_path, map_location="cpu")
+        else:
+            raise FileNotFoundError(f"No model file found in {checkpoint_path}")
+    elif checkpoint_path.endswith('.safetensors'):
+        from safetensors.torch import load_file
+        state_dict = load_file(checkpoint_path)
+    else:
+        # Standard .pth checkpoint
+        state_dict = torch.load(checkpoint_path, map_location="cpu")
+
+    generator.load_state_dict(state_dict, strict=True)
+
+    generator = generator.to(device)
+    generator.eval()
+
+    return generator
+
+
+@torch.no_grad()
+def generate_with_masked_activation(
+    generator,
+    activation_mask: ActivationMask,
+    class_label: int = None,
+    conditioning_sigma: float = 0.1,
+    num_samples: int = 1,
+    resolution: int = 64,
+    device: str = 'cuda',
+    seed: int = None
+):
+    """
+    Generate images with fixed activation at specified layer.
+
+    Args:
+        generator: DMD2 generator model (EDMPrecond)
+        activation_mask: ActivationMask with masks set
+        class_label: ImageNet class label (0-999), random if None
+        conditioning_sigma: Noise level for conditioning
+        num_samples: Number of images to generate
+        resolution: Image resolution (64 for ImageNet)
+        device: Device to generate on
+        seed: Random seed for noise
+
+    Returns:
+        Generated images as tensor (N, H, W, 3) uint8
+    """
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    # Generate random labels if not specified
+    if class_label < 0: #uniform weights across labels
+        random_labels = torch.tensor([-1], device=device).repeat((num_samples,))
+    elif class_label is None:
+        random_labels = torch.randint(0, 1000, (num_samples,), device=device)
+    else:
+        random_labels = torch.full((num_samples,), class_label, device=device, dtype=torch.long)
+
+    # Create one-hot labels
+    if class_label < 0: 
+        #uniform weight across labels
+        one_hot_labels = torch.ones((1000), dtype=torch.float16, device=device).repeat((num_samples, )) * (1/1000)
+    else: 
+        one_hot_labels = torch.eye(1000, device=device)[random_labels]
+
+    # Generate noise
+    noise = torch.randn(num_samples, 3, resolution, resolution, device=device)
+
+    # Generate with masked activations
+    timesteps = torch.ones(num_samples, device=device) * conditioning_sigma
+
+    
+    generated_images = generator(
+        noise * conditioning_sigma,
+        timesteps,
+        one_hot_labels
+    )
+
+    # Convert to uint8 images
+    images = ((generated_images + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+    images = images.permute(0, 2, 3, 1).cpu()
+
+    return images, random_labels.cpu()
+
+
+@torch.no_grad()
+def generate_with_masked_activation_multistep(
+    generator,
+    activation_mask: ActivationMask,
+    class_label: int = None,
+    num_steps: int = 4,
+    sigma_max: float = 80.0,
+    sigma_min: float = 0.002,
+    rho: float = 7.0,
+    guidance_scale: float = 1.0,
+    stochastic: bool = True,
+    num_samples: int = 1,
+    resolution: int = 64,
+    device: str = 'cuda',
+    seed: int = None
+):
+    """
+    Generate images with fixed activation using multi-step denoising.
+
+    Args:
+        generator: DMD2 generator model (EDMPrecond)
+        activation_mask: ActivationMask with masks set (hooks should be registered)
+        class_label: ImageNet class label (0-999), random if None, -1 for uniform
+        num_steps: Number of denoising steps (e.g., 4, 10)
+        sigma_max: Maximum sigma for noise schedule
+        sigma_min: Minimum sigma for noise schedule
+        rho: Karras schedule parameter
+        guidance_scale: CFG scale (1.0 = no guidance)
+        stochastic: Whether to add noise between steps
+        num_samples: Number of images to generate
+        resolution: Image resolution (64 for ImageNet)
+        device: Device to generate on
+        seed: Random seed for noise
+
+    Returns:
+        Generated images as tensor (N, H, W, 3) uint8, labels
+    """
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    # Generate random labels if not specified
+    if class_label is not None and class_label < 0:
+        # Uniform weights across labels
+        random_labels = torch.tensor([-1], device=device).repeat((num_samples,))
+        one_hot_labels = torch.ones((num_samples, 1000), dtype=torch.float32, device=device) * (1/1000)
+        uncond_labels = one_hot_labels.clone()  # Same for CFG
+    elif class_label is None:
+        random_labels = torch.randint(0, 1000, (num_samples,), device=device)
+        one_hot_labels = torch.eye(1000, device=device)[random_labels]
+        uncond_labels = torch.zeros_like(one_hot_labels)
+    else:
+        random_labels = torch.full((num_samples,), class_label, device=device, dtype=torch.long)
+        one_hot_labels = torch.eye(1000, device=device)[random_labels]
+        uncond_labels = torch.zeros_like(one_hot_labels)
+
+    # Generate sigma schedule (descending: large to small)
+    sigmas = get_denoising_sigmas(num_steps, sigma_max, sigma_min, rho).to(device)
+
+    # Start from pure noise scaled by sigma_max
+    noise = torch.randn(num_samples, 3, resolution, resolution, device=device)
+    x = noise * sigma_max
+
+    # Iterative denoising
+    for i, sigma in enumerate(sigmas):
+        sigma_tensor = torch.ones(num_samples, device=device) * sigma
+
+        if guidance_scale > 1.0:
+            # Classifier-free guidance
+            pred_cond = generator(x, sigma_tensor, one_hot_labels)
+            pred_uncond = generator(x, sigma_tensor, uncond_labels)
+            pred = pred_uncond + guidance_scale * (pred_cond - pred_uncond)
+        else:
+            # No guidance
+            pred = generator(x, sigma_tensor, one_hot_labels)
+
+        # Transition to next step
+        if i < len(sigmas) - 1:
+            next_sigma = sigmas[i + 1]
+            if stochastic:
+                # Stochastic sampling - add noise for next step
+                x = pred + next_sigma * torch.randn_like(pred)
+            else:
+                # Deterministic - just use prediction as starting point
+                x = pred
+        else:
+            # Final step - use prediction directly
+            x = pred
+
+    # Convert to uint8 images
+    images = ((x + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+    images = images.permute(0, 2, 3, 1).cpu()
+
+    return images, random_labels.cpu()
+
+
+def save_generated_sample(
+    image: torch.Tensor,
+    activations: dict,
+    metadata: dict,
+    output_dir: Path,
+    sample_id: str
+):
+    """
+    Save generated image, activations, and metadata.
+
+    Args:
+        image: (H, W, 3) uint8 tensor
+        activations: Dict of layer_name -> activation tensor
+        metadata: Dict with sample info
+        output_dir: Root output directory
+        sample_id: Unique sample identifier
+    """
+    output_dir = Path(output_dir)
+
+    # Save image
+    image_dir = output_dir / "images" / metadata.get("model", "imagenet")
+    image_dir.mkdir(parents=True, exist_ok=True)
+    image_path = image_dir / f"{sample_id}.png"
+
+    image_pil = Image.fromarray(image.numpy())
+    image_pil.save(image_path)
+
+    # Save activations
+    activation_dir = output_dir / "activations" / metadata.get("model", "imagenet")
+    activation_dir.mkdir(parents=True, exist_ok=True)
+    activation_path = activation_dir / f"{sample_id}"
+
+    # Convert activations to numpy and save
+    activation_dict = {}
+    for name, activation in activations.items():
+        if isinstance(activation, torch.Tensor):
+            # Flatten spatial dimensions
+            if len(activation.shape) == 4:
+                B, C, H, W = activation.shape
+                activation_dict[name] = activation.reshape(B, -1).cpu().numpy()
+            else:
+                activation_dict[name] = activation.cpu().numpy()
+        else:
+            activation_dict[name] = activation
+
+    np.savez_compressed(str(activation_path.with_suffix('.npz')), **activation_dict)
+
+    # Save metadata
+    with open(activation_path.with_suffix('.json'), 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    return {
+        'sample_id': sample_id,
+        'image_path': f"images/{metadata.get('model', 'imagenet')}/{sample_id}.png",
+        **metadata
+    }
+
+
+def infer_activation_shape(generator, layer_name: str, device: str = 'cuda'):
+    """
+    Infer the spatial shape of a layer's activation by running a dummy forward pass.
+
+    Args:
+        generator: DMD2 generator model
+        layer_name: Name of layer to infer shape for
+        device: Device to run inference on
+
+    Returns:
+        (C, H, W) shape tuple
+    """
+    from extract_activations import ActivationExtractor
+
+    # Create dummy input
+    dummy_noise = torch.randn(1, 3, 64, 64, device=device)
+    dummy_label = torch.zeros(1, 1000, device=device)
+    dummy_label[0, 0] = 1.0
+    dummy_sigma = torch.ones(1, device=device) * 80.0
+
+    # Extract activation shape
+    with ActivationExtractor("imagenet") as extractor:
+        extractor.register_hooks(generator, [layer_name])
+        _ = generator(dummy_noise * 80.0, dummy_sigma, dummy_label)
+        activations = extractor.get_activations()
+
+    if layer_name not in activations:
+        raise ValueError(f"Layer {layer_name} not found during inference")
+
+    shape = activations[layer_name].shape  # (B, C, H, W)
+    return tuple(shape[1:])  # (C, H, W)
