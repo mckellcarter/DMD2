@@ -126,8 +126,48 @@ center_activation = self.umap_reducer.inverse_transform(center_2d)
 1. Trajectory grid hover - shows all steps with hovered step highlighted
 2. Clear button resets selection state
 
+## Session 2 Findings (Dec 19, 2025)
+
+### Root Cause Found: UMAP inverse_transform is Broken
+
+Diagnostic output showed massive round-trip error:
+```
+[DIAG] Inverse transform round-trip error: 4.0790
+[DIAG] Original center: (-2.876, 3.838)
+[DIAG] Round-trip center: (1.187, 4.190)
+```
+
+The inverse_transform was placing Step 0 at completely wrong location (4+ UMAP units away from intended).
+
+### Solution Implemented: High-D Averaging
+
+Changed architecture to avoid inverse_transform entirely:
+- **Old**: Select neighbors in UMAP → average 2D coords → inverse_transform → high-D activation
+- **New**: Select neighbors → average directly in high-D activation space → forward transform for visualization only
+
+Key changes:
+1. `fit_nearest_neighbors()` - Now fits KNN on high-D activations (scaled)
+2. `find_neighbors()` - Queries using high-D activations
+3. `generate_from_neighbors()` - Averages neighbor activations directly, forward transforms for visualization
+
+### Results After Fix
+
+Starting point now correct. But Step 0→1 still shows large UMAP jump:
+```
+[DIAG] Step 0->1: high-D=398.88, UMAP=4.3932
+[DIAG] Step 1->2: high-D=451.11, UMAP=2.5251
+[DIAG] Step 2->3: high-D=283.74, UMAP=0.6364
+```
+
+This is expected with `mask_steps=1` - after first step, model is unconstrained.
+
+### Remaining Investigation
+
+1. **mask_steps effect** - Try `mask_steps=4` (all steps masked) to see if trajectory stays tighter
+2. **High-D distances still large** - 280-450 units between steps suggests activations change significantly during denoising
+3. **UMAP distortion** - Ratios vary 0.002-0.011, UMAP may amplify certain directions
+
 ## Next Steps
-1. Add diagnostic logging for high-D distances
-2. Verify inverse_transform accuracy
-3. Test single-layer UMAP projections
-4. Consider alternative visualization (t-SNE, PCA) for comparison
+1. Test with `mask_steps=num_steps` to keep activations constrained
+2. Investigate per-layer activation changes
+3. Consider whether trajectory visualization is meaningful given denoising dynamics

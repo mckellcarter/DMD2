@@ -385,13 +385,19 @@ class DMD2Visualizer:
         ], fluid=True, className="p-4")
 
     def fit_nearest_neighbors(self):
-        """Fit KNN model on UMAP coordinates."""
-        if self.df.empty or 'umap_x' not in self.df.columns:
+        """Fit KNN model on high-D activations (not UMAP coords)."""
+        if self.activations is None or len(self.activations) == 0:
+            print("[KNN] No activations loaded, skipping KNN fit")
             return
 
-        coords = self.df[['umap_x', 'umap_y']].values
+        # Use scaled activations if scaler exists (same as UMAP training)
+        activations = self.activations
+        if self.umap_scaler is not None:
+            activations = self.umap_scaler.transform(activations)
+
+        print(f"[KNN] Fitting on high-D activations: {activations.shape}")
         self.nn_model = NearestNeighbors(n_neighbors=21, metric='euclidean')
-        self.nn_model.fit(coords)
+        self.nn_model.fit(activations)
 
     def register_callbacks(self):
         """Register Dash callbacks."""
@@ -770,15 +776,17 @@ class DMD2Visualizer:
             prevent_initial_call=True
         )
         def find_neighbors(n_clicks, selected_idx, k, manual_neighbors):
-            """Find k nearest neighbors and merge with manual neighbors."""
-            if selected_idx is None or self.nn_model is None:
+            """Find k nearest neighbors in high-D activation space."""
+            if selected_idx is None or self.nn_model is None or self.activations is None:
                 return None
 
-            # Get coordinates of selected point
-            selected_coords = self.df.iloc[selected_idx][['umap_x', 'umap_y']].values.reshape(1, -1)
+            # Get high-D activation of selected point (scaled if scaler exists)
+            selected_act = self.activations[selected_idx:selected_idx+1]
+            if self.umap_scaler is not None:
+                selected_act = self.umap_scaler.transform(selected_act)
 
-            # Find neighbors (k+1 to exclude the point itself)
-            distances, indices = self.nn_model.kneighbors(selected_coords, n_neighbors=k+1)
+            # Find neighbors in high-D space (k+1 to exclude the point itself)
+            distances, indices = self.nn_model.kneighbors(selected_act, n_neighbors=k+1)
 
             # Remove the point itself (first result)
             neighbor_indices = indices[0][1:].tolist()
@@ -1012,48 +1020,28 @@ class DMD2Visualizer:
                 if not all_neighbors:
                     return "Error: No neighbors selected", dash.no_update, dash.no_update
 
-                # Calculate center of neighbors in UMAP space
-                print(all_neighbors)
-                neighbor_coords = self.df.iloc[all_neighbors][['umap_x', 'umap_y']].values
-                center_2d = np.mean(neighbor_coords, axis=0).reshape(1, -1)
+                if self.activations is None:
+                    return "Error: Activations not loaded", dash.no_update, dash.no_update
 
-                status_msg = f"Calculating center from {len(all_neighbors)} neighbors..."
-                
-                # Inverse transform to activation space
-                if self.umap_reducer is None:
-                    return "Error: UMAP model not loaded", dash.no_update, dash.no_update
+                # NEW: Average neighbors directly in high-D activation space (no inverse_transform!)
+                print(f"[GEN] Neighbors: {all_neighbors}")
+                neighbor_activations = self.activations[all_neighbors]
+                center_activation = np.mean(neighbor_activations, axis=0, keepdims=True)
+                print(f"[GEN] Averaged {len(all_neighbors)} neighbor activations in high-D space")
+                print(f"[GEN] Center activation shape: {center_activation.shape}")
 
-                center_activation = self.umap_reducer.inverse_transform(center_2d)
-
-                """
-                #######debug inversion ################
-                print(center_activation.shape)
-                first_neighbor_act = self.activations[all_neighbors[0],][np.newaxis,:]
-                print(first_neighbor_act.shape)
-                inv_proj_dist = pairwise_distances(first_neighbor_act, center_activation, metric='euclidean') #calculate distance from inverted point to first manual neighbor (to check inversion accuracy with a single neighbor)
-                print(f"Distance from center to manual neighbor1 in vector space is: {inv_proj_dist}", flush=True)
-
-                print(f"[DEBUG] Transforming {self.activations.shape[0]} activations through UMAP (this may be slow)...", flush=True)
-                all_act_proj = self.umap_reducer.transform(self.activations)
-                print(f"[DEBUG] UMAP transform complete", flush=True)
-                all_proj_mask = np.all(all_act_proj == neighbor_coords[0,][np.newaxis], axis=1) #is there a projection that matches the old projection target?
-                matching_indices = np.where(all_proj_mask) #what is the index of the matching embed?
-                print(f"Embedding match at index: {matching_indices}")
-
-
-                re_proj_embedded = self.umap_reducer.transform(first_neighbor_act)
-                re_re_proj_embedded = self.umap_reducer.transform(first_neighbor_act)
-                re_proj_dist = pairwise_distances(re_proj_embedded, neighbor_coords[0,:][np.newaxis,:], metric='euclidean')
-                print(f"Dist {re_proj_embedded} to {neighbor_coords[0,:][np.newaxis,:]}, center is {center_2d}, reprojected first neigh act (check embedding same point to same place) is: {re_proj_dist}")
-
-                re_re_proj_dist = pairwise_distances(re_proj_embedded, re_re_proj_embedded, metric='euclidean')
-                print(f"Dist first neighbor, re-reprojected first neigh act (check embedding same point to same place) is: {re_re_proj_dist}")
-                #######################
-                """
-
-                # Un-normalize if scaler was used
+                # Forward transform to get intended 2D position for visualization
+                center_scaled = center_activation
                 if self.umap_scaler is not None:
-                    center_activation = self.umap_scaler.inverse_transform(center_activation)
+                    center_scaled = self.umap_scaler.transform(center_activation)
+                if self.umap_reducer is not None:
+                    center_2d = self.umap_reducer.transform(center_scaled)
+                    print(f"[GEN] Intended center in UMAP: ({center_2d[0,0]:.3f}, {center_2d[0,1]:.3f})")
+                else:
+                    # Fallback: average UMAP coords of neighbors
+                    neighbor_coords = self.df.iloc[all_neighbors][['umap_x', 'umap_y']].values
+                    center_2d = np.mean(neighbor_coords, axis=0).reshape(1, -1)
+                    print(f"[GEN] Intended center (avg UMAP coords): ({center_2d[0,0]:.3f}, {center_2d[0,1]:.3f})")
 
                 # Load generator if not already loaded
                 if self.generator is None:
@@ -1166,8 +1154,11 @@ class DMD2Visualizer:
 
                 # Project trajectory through UMAP and save intermediate images
                 trajectory_coords = []
+                prev_act_scaled = None
+                prev_coords = None
                 if trajectory_acts is not None and len(trajectory_acts) > 0:
                     print(f"[GEN] Projecting {len(trajectory_acts)} trajectory points through UMAP...")
+                    print(f"[DIAG] Comparing high-D vs UMAP distances between steps:")
 
                     # Create directory for intermediate images
                     intermediate_dir = self.data_dir / "images" / "intermediates"
@@ -1175,10 +1166,19 @@ class DMD2Visualizer:
 
                     for step_idx, act in enumerate(trajectory_acts):
                         # Apply scaler if used during UMAP training
+                        act_scaled = act
                         if self.umap_scaler is not None:
-                            act = self.umap_scaler.transform(act)
+                            act_scaled = self.umap_scaler.transform(act)
                         # Project to 2D
-                        coords = self.umap_reducer.transform(act)
+                        coords = self.umap_reducer.transform(act_scaled)
+
+                        # Diagnostic: Compare distances
+                        if prev_act_scaled is not None:
+                            high_d_dist = np.linalg.norm(act_scaled - prev_act_scaled)
+                            umap_dist = np.linalg.norm(coords - prev_coords)
+                            print(f"[DIAG] Step {step_idx-1}->{step_idx}: high-D={high_d_dist:.2f}, UMAP={umap_dist:.4f}, ratio={umap_dist/high_d_dist:.6f}")
+                        prev_act_scaled = act_scaled
+                        prev_coords = coords
 
                         # Save intermediate image if available
                         img_path = None
