@@ -156,6 +156,7 @@ def generate_with_masked_activation_multistep(
     activation_mask: ActivationMask,
     class_label: int = None,
     num_steps: int = 4,
+    mask_steps: int = None,
     sigma_max: float = 80.0,
     sigma_min: float = 0.002,
     rho: float = 7.0,
@@ -174,6 +175,8 @@ def generate_with_masked_activation_multistep(
         activation_mask: ActivationMask with masks set (hooks should be registered)
         class_label: ImageNet class label (0-999), random if None, -1 for uniform
         num_steps: Number of denoising steps (e.g., 4, 10)
+        mask_steps: Number of steps to apply activation mask (default=num_steps).
+                    Use mask_steps=1 to only constrain the first step.
         sigma_max: Maximum sigma for noise schedule
         sigma_min: Minimum sigma for noise schedule
         rho: Karras schedule parameter
@@ -187,6 +190,9 @@ def generate_with_masked_activation_multistep(
     Returns:
         Generated images as tensor (N, H, W, 3) uint8, labels
     """
+    # Default: mask all steps (backward compatible)
+    if mask_steps is None:
+        mask_steps = num_steps
     if seed is not None:
         torch.manual_seed(seed)
 
@@ -214,6 +220,10 @@ def generate_with_masked_activation_multistep(
 
     # Iterative denoising
     for i, sigma in enumerate(sigmas):
+        # Remove activation mask after mask_steps
+        if i == mask_steps and activation_mask is not None:
+            activation_mask.remove_hooks()
+
         sigma_tensor = torch.ones(num_samples, device=device) * sigma
 
         if guidance_scale > 1.0:

@@ -123,8 +123,7 @@ torchrun --nproc_per_node $NUM_GPUS --nnodes 1 main/edm/train_edm_multistep.py \
     --gen_cls_loss_weight 3e-3 \
     --diffusion_gan \
     --diffusion_gan_max_timestep 1000 \
-    --delete_ckpts \
-    --max_checkpoint 10 \
+    --keep_checkpoints 10 \
     --denoising \
     --num_denoising_step 10 \
     --backward_simulation \
