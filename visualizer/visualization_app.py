@@ -357,6 +357,14 @@ class DMD2Visualizer:
                                 disabled=True
                             ),
                             html.Div(id="generation-status", className="text-muted small mb-2"),
+                            dbc.Button(
+                                "Clear Generated",
+                                id="clear-generated-btn",
+                                color="secondary",
+                                size="sm",
+                                outline=True,
+                                className="w-100 mb-2",
+                            ),
 
                             html.Hr(),
                             html.Label("Manual Neighbor Selection"),
@@ -480,10 +488,68 @@ class DMD2Visualizer:
             point_data = hoverData['points'][0]
             curve_number = point_data.get('curveNumber', 0)
 
-            # If hovering over generated overlay (trace 1+), use customdata for real index
+            # If hovering over non-main trace with customdata, check type to distinguish
+            # Trajectory points: customdata[0] is string (sample_id)
+            # Generated overlay: customdata[0] is int (df index)
             if curve_number > 0 and 'customdata' in point_data:
-                # customdata is a list, extract first element
-                point_idx = point_data['customdata'][0]
+                first_elem = point_data['customdata'][0]
+
+                # Trajectory point: customdata = [sample_id_str, step_str, img_path]
+                if isinstance(first_elem, str):
+                    customdata = point_data['customdata']
+                    sample_id, step, img_path = customdata[0], customdata[1], customdata[2]
+
+                    # Look up full trajectory for this sample
+                    full_trajectory = None
+                    if hasattr(self, 'generated_trajectories'):
+                        for traj in self.generated_trajectories:
+                            if traj['sample_id'] == sample_id:
+                                full_trajectory = traj.get('trajectory', [])
+                                break
+
+                    # Build grid of all trajectory images with hovered one highlighted
+                    if full_trajectory:
+                        grid_items = []
+                        for traj_point in full_trajectory:
+                            traj_step = f"step {traj_point['step']}"
+                            traj_img_path = traj_point.get('image_path')
+                            is_hovered = (traj_step == step)
+
+                            if traj_img_path:
+                                img_b64 = self.get_image_base64(traj_img_path, size=(80, 80))
+                                border_style = "3px solid red" if is_hovered else "1px solid #ccc"
+                                opacity = "1" if is_hovered else "0.7"
+                                grid_items.append(html.Div([
+                                    html.Img(
+                                        src=img_b64,
+                                        style={"width": "100%", "border": border_style, "borderRadius": "4px", "opacity": opacity}
+                                    ) if img_b64 else html.Div("?", style={"width": "60px", "height": "60px"}),
+                                    html.Div(f"Step {traj_point['step']}", className="text-center small",
+                                             style={"fontWeight": "bold" if is_hovered else "normal"})
+                                ], style={"display": "inline-block", "margin": "2px", "textAlign": "center"}))
+
+                        img_element = html.Div(grid_items, style={
+                            "display": "flex", "flexWrap": "wrap", "justifyContent": "center"
+                        })
+                    elif img_path:
+                        # Fallback to single image if trajectory not found
+                        img_b64 = self.get_image_base64(img_path, size=(200, 200))
+                        img_element = html.Img(
+                            src=img_b64,
+                            style={"width": "100%", "border": "2px solid red", "borderRadius": "4px"}
+                        ) if img_b64 else html.Div("Image not found")
+                    else:
+                        img_element = html.Div("No image (intended point)", className="text-muted")
+
+                    details = [
+                        html.Div([html.Strong("Sample: "), html.Span(sample_id, className="small")]),
+                        html.Div([html.Strong("Hovered: "), html.Span(step, className="small")]),
+                        html.Div([html.Strong("Coords: "), html.Span(f"({point_data['x']:.3f}, {point_data['y']:.3f})", className="small")])
+                    ]
+                    return img_element, html.Div(details, className="small")
+
+                # Generated overlay: customdata = [int_df_index]
+                point_idx = first_elem
             else:
                 # Main scatter plot (trace 0), use pointIndex directly
                 point_idx = point_data['pointIndex']
@@ -563,18 +629,16 @@ class DMD2Visualizer:
             point_data = clickData['points'][0]
             curve_number = point_data.get('curveNumber', 0)
 
-            # Debug logging
-            print(f"DEBUG: curve_number={curve_number}, pointIndex={point_data.get('pointIndex')}, customdata={point_data.get('customdata')}")
-
-            # If clicked on generated overlay (trace 1+), use customdata for real index
+            # If clicked on non-main trace with customdata, check type
             if curve_number > 0 and 'customdata' in point_data:
-                # customdata is a list, extract first element
-                point_idx = point_data['customdata'][0]
-                print(f"DEBUG: Using customdata for generated point: {point_idx}")
+                first_elem = point_data['customdata'][0]
+                # Trajectory point (string customdata) - ignore clicks
+                if isinstance(first_elem, str):
+                    return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                # Generated overlay (int customdata)
+                point_idx = first_elem
             else:
-                # Main scatter plot (trace 0), use pointIndex directly
                 point_idx = point_data['pointIndex']
-                print(f"DEBUG: Using pointIndex for main scatter: {point_idx}")
 
             # Ensure lists are initialized
             if manual_neighbors is None:
@@ -747,6 +811,11 @@ class DMD2Visualizer:
             manual_neighbors = manual_neighbors or []
             knn_neighbors = knn_neighbors or []
 
+            # Filter out any indices that are now out of bounds (e.g., after clearing generated)
+            max_idx = len(self.df) - 1
+            manual_neighbors = [idx for idx in manual_neighbors if idx <= max_idx]
+            knn_neighbors = [idx for idx in knn_neighbors if idx <= max_idx]
+
             # Build combined list (KNN first, then manual additions at bottom)
             all_neighbors = []
             # Add KNN neighbors that aren't in manual list
@@ -755,6 +824,9 @@ class DMD2Visualizer:
                     all_neighbors.append(idx)
             # Add manual neighbors at the end (most recently added at bottom)
             all_neighbors.extend(manual_neighbors)
+
+            if not all_neighbors:
+                return html.Div("No neighbors selected", className="text-muted small")
 
             # Build neighbor cards
             neighbor_items = []
@@ -765,9 +837,9 @@ class DMD2Visualizer:
                 # Get image thumbnail
                 img_b64 = self.get_image_base64(neighbor_sample['image_path'], size=(64, 64))
 
-                # Calculate distance if selected point exists
+                # Calculate distance if selected point exists and is valid
                 dist_text = ""
-                if selected_idx is not None:
+                if selected_idx is not None and selected_idx <= max_idx:
                     selected_coords = self.df.iloc[selected_idx][['umap_x', 'umap_y']].values
                     neighbor_coords = self.df.iloc[idx][['umap_x', 'umap_y']].values
                     dist = np.linalg.norm(selected_coords - neighbor_coords)
@@ -818,18 +890,19 @@ class DMD2Visualizer:
 
             fig = go.Figure(current_figure)
 
-            # Remove any existing highlight traces but keep main scatter + generated overlay
-            # Trace 0 = main scatter, Trace 1 = generated overlay (if exists)
-            # Remove traces 2+ which are highlights (selected, neighbors)
+            # Remove any existing highlight traces but keep main scatter + generated overlay + trajectories
+            # Trace 0 = main scatter, keep 'Generated', 'Trajectory', 'Intended' traces
+            # Remove highlight traces (Selected, KNN Neighbors, Manual Neighbors)
             base_traces = []
             for i, trace in enumerate(fig.data):
-                # Keep main scatter and generated overlay
-                if i == 0 or (trace.name == 'Generated'):
+                trace_name = trace.name or ''
+                # Keep main scatter, generated overlay, and trajectory traces
+                if i == 0 or trace_name == 'Generated' or 'Trajectory' in trace_name or trace_name == 'Intended':
                     base_traces.append(trace)
             fig.data = base_traces
 
-            # If no point selected, just return with base traces
-            if selected_idx is None:
+            # If no point selected or index out of bounds, just return with base traces
+            if selected_idx is None or selected_idx >= len(self.df):
                 return fig
 
             # Highlight selected point (green if generated, blue if original)
@@ -945,58 +1018,54 @@ class DMD2Visualizer:
                 center_2d = np.mean(neighbor_coords, axis=0).reshape(1, -1)
 
                 status_msg = f"Calculating center from {len(all_neighbors)} neighbors..."
-                print(status_msg)
-                print(f"Neighbor Coords: {neighbor_coords}")
-                print(f"2d center: {center_2d}---")
                 
                 # Inverse transform to activation space
                 if self.umap_reducer is None:
                     return "Error: UMAP model not loaded", dash.no_update, dash.no_update
 
-                print("Inverting umap for new point: ")
                 center_activation = self.umap_reducer.inverse_transform(center_2d)
 
+                """
                 #######debug inversion ################
                 print(center_activation.shape)
                 first_neighbor_act = self.activations[all_neighbors[0],][np.newaxis,:]
                 print(first_neighbor_act.shape)
                 inv_proj_dist = pairwise_distances(first_neighbor_act, center_activation, metric='euclidean') #calculate distance from inverted point to first manual neighbor (to check inversion accuracy with a single neighbor)
-                print(f"Distance from center to manual neighbor1 in vector space is: {inv_proj_dist}")
-                
+                print(f"Distance from center to manual neighbor1 in vector space is: {inv_proj_dist}", flush=True)
+
+                print(f"[DEBUG] Transforming {self.activations.shape[0]} activations through UMAP (this may be slow)...", flush=True)
                 all_act_proj = self.umap_reducer.transform(self.activations)
-                all_proj_mask = np.all(all_act_proj == neighbor_coords[0,][np.newaxis], axis=1) #is there a projection that matches the old projection target? 
-                matching_indices = np.where(all_proj_mask) #what is the index of the matching embed? 
+                print(f"[DEBUG] UMAP transform complete", flush=True)
+                all_proj_mask = np.all(all_act_proj == neighbor_coords[0,][np.newaxis], axis=1) #is there a projection that matches the old projection target?
+                matching_indices = np.where(all_proj_mask) #what is the index of the matching embed?
                 print(f"Embedding match at index: {matching_indices}")
-                
-                
+
+
                 re_proj_embedded = self.umap_reducer.transform(first_neighbor_act)
                 re_re_proj_embedded = self.umap_reducer.transform(first_neighbor_act)
                 re_proj_dist = pairwise_distances(re_proj_embedded, neighbor_coords[0,:][np.newaxis,:], metric='euclidean')
                 print(f"Dist {re_proj_embedded} to {neighbor_coords[0,:][np.newaxis,:]}, center is {center_2d}, reprojected first neigh act (check embedding same point to same place) is: {re_proj_dist}")
-                
+
                 re_re_proj_dist = pairwise_distances(re_proj_embedded, re_re_proj_embedded, metric='euclidean')
                 print(f"Dist first neighbor, re-reprojected first neigh act (check embedding same point to same place) is: {re_re_proj_dist}")
                 #######################
+                """
 
                 # Un-normalize if scaler was used
                 if self.umap_scaler is not None:
                     center_activation = self.umap_scaler.inverse_transform(center_activation)
-
-                print(f"Center activation shape: {center_activation.shape}")
 
                 # Load generator if not already loaded
                 if self.generator is None:
                     if self.checkpoint_path is None:
                         return "Error: No checkpoint path provided", dash.no_update, dash.no_update
 
-                    print(f"Loading generator from {self.checkpoint_path}")
-                    print(f"Using {self.num_steps}-step generation, guidance_scale={self.guidance_scale}")
+                    print(f"Loading generator ({self.num_steps}-step)...")
                     self.generator = create_imagenet_generator(
                         self.checkpoint_path,
                         device=self.device,
                         label_dropout=self.label_dropout
                     )
-                    print("Generator loaded")
 
                 # Determine which layers were used (from UMAP params or default)
                 layers = self.umap_params.get('layers', ['encoder_bottleneck', 'midblock'])
@@ -1006,7 +1075,6 @@ class DMD2Visualizer:
                 # Get layer shapes if not cached
                 for layer_name in layers:
                     if layer_name not in self.layer_shapes:
-                        print(f"Inferring shape for {layer_name}")
                         self.layer_shapes[layer_name] = infer_activation_shape(
                             self.generator,
                             layer_name,
@@ -1030,19 +1098,21 @@ class DMD2Visualizer:
                     )
                     activation_dict[layer_name] = layer_act
 
-                print(f"Split activation into {len(activation_dict)} layers")
+                print(f"[GEN] Split activation into {len(activation_dict)} layers", flush=True)
 
                 # Create activation mask
+                print("[GEN] Creating activation mask...", flush=True)
                 mask = ActivationMask(model_type="imagenet")
                 for layer_name, activation in activation_dict.items():
-                    #if layer_name == "encoder_bottleneck":
-                        print(layer_name)
-                        mask.set_mask(layer_name, activation)
+                    print(f"[GEN] Setting mask for {layer_name}, shape={activation.shape}", flush=True)
+                    mask.set_mask(layer_name, activation)
 
                 # Register hooks
+                print("[GEN] Registering hooks...", flush=True)
                 mask.register_hooks(self.generator, list(activation_dict.keys()))
+                print(f"[GEN] Registered {len(mask.hooks)} hooks", flush=True)
 
-                print("Generating image...")
+                print("[GEN] Starting image generation...", flush=True)
 
                 # Generate image (use same class as selected point if available)
                 class_label = None
@@ -1059,7 +1129,7 @@ class DMD2Visualizer:
                 if self.num_steps > 1:
                     mask_info = f", mask_steps={self.mask_steps or self.num_steps}"
                     print(f"Using {self.num_steps}-step generation{mask_info}")
-                    images, labels = generate_with_masked_activation_multistep(
+                    images, labels, trajectory_acts, intermediate_imgs = generate_with_masked_activation_multistep(
                         self.generator,
                         mask,
                         class_label=class_label,
@@ -1070,7 +1140,10 @@ class DMD2Visualizer:
                         guidance_scale=self.guidance_scale,
                         stochastic=True,
                         num_samples=1,
-                        device=self.device
+                        device=self.device,
+                        extract_layers=sorted(layers),
+                        return_trajectory=True,
+                        return_intermediates=True
                     )
                 else:
                     images, labels = generate_with_masked_activation(
@@ -1081,6 +1154,8 @@ class DMD2Visualizer:
                         num_samples=1,
                         device=self.device
                     )
+                    trajectory_acts = None  # No trajectory for single-step
+                    intermediate_imgs = None  # No intermediates for single-step
 
                 # Get the generated activations
                 generated_activations = extractor.get_activations()
@@ -1088,6 +1163,38 @@ class DMD2Visualizer:
                 mask.remove_hooks()
 
                 print("Image generated successfully")
+
+                # Project trajectory through UMAP and save intermediate images
+                trajectory_coords = []
+                if trajectory_acts is not None and len(trajectory_acts) > 0:
+                    print(f"[GEN] Projecting {len(trajectory_acts)} trajectory points through UMAP...")
+
+                    # Create directory for intermediate images
+                    intermediate_dir = self.data_dir / "images" / "intermediates"
+                    intermediate_dir.mkdir(parents=True, exist_ok=True)
+
+                    for step_idx, act in enumerate(trajectory_acts):
+                        # Apply scaler if used during UMAP training
+                        if self.umap_scaler is not None:
+                            act = self.umap_scaler.transform(act)
+                        # Project to 2D
+                        coords = self.umap_reducer.transform(act)
+
+                        # Save intermediate image if available
+                        img_path = None
+                        if intermediate_imgs is not None and step_idx < len(intermediate_imgs):
+                            img_filename = f"sample_{len(self.df):06d}_step{step_idx}.png"
+                            img_path = f"images/intermediates/{img_filename}"
+                            full_path = self.data_dir / img_path
+                            Image.fromarray(intermediate_imgs[step_idx][0].numpy()).save(full_path)
+
+                        trajectory_coords.append({
+                            'step': step_idx,
+                            'x': float(coords[0, 0]),
+                            'y': float(coords[0, 1]),
+                            'image_path': img_path
+                        })
+                    print(f"[GEN] Trajectory: {[(round(t['x'], 3), round(t['y'], 3)) for t in trajectory_coords]}")
 
                 # Save the generated sample
                 model_type = self.umap_params.get('model', 'imagenet')
@@ -1098,7 +1205,8 @@ class DMD2Visualizer:
                     'class_label': int(labels[0]),
                     'model': model_type,
                     'generated_from_neighbors': all_neighbors,
-                    'neighbor_center_umap': center_2d.tolist()[0]
+                    'neighbor_center_umap': center_2d.tolist()[0],
+                    'trajectory': trajectory_coords
                 }
 
                 sample_record = save_generated_sample(
@@ -1109,15 +1217,33 @@ class DMD2Visualizer:
                     next_sample_id
                 )
 
-                # Add to dataframe with UMAP coordinates as center
+                # Use final trajectory point as actual position, or center_2d if no trajectory
+                if trajectory_coords:
+                    final_x = trajectory_coords[-1]['x']
+                    final_y = trajectory_coords[-1]['y']
+                else:
+                    final_x = center_2d[0, 0]
+                    final_y = center_2d[0, 1]
+
+                # Add to dataframe with actual UMAP coordinates
                 new_row = pd.DataFrame([{
                     'sample_id': next_sample_id,
                     'image_path': sample_record['image_path'],
                     'class_label': int(labels[0]),
-                    'umap_x': center_2d[0, 0],
-                    'umap_y': center_2d[0, 1],
+                    'umap_x': final_x,
+                    'umap_y': final_y,
                     'is_generated': True
                 }])
+
+                # Store trajectory for visualization
+                if not hasattr(self, 'generated_trajectories'):
+                    self.generated_trajectories = []
+                self.generated_trajectories.append({
+                    'sample_id': next_sample_id,
+                    'intended_x': float(center_2d[0, 0]),
+                    'intended_y': float(center_2d[0, 1]),
+                    'trajectory': trajectory_coords
+                })
                 # Mark existing points as not generated if column doesn't exist
                 if 'is_generated' not in self.df.columns:
                     self.df['is_generated'] = False
@@ -1149,6 +1275,52 @@ class DMD2Visualizer:
                 )
 
                 fig.update_traces(marker=dict(size=5, opacity=0.7))
+
+                # Add trajectory traces for generated samples
+                if hasattr(self, 'generated_trajectories') and self.generated_trajectories:
+                    for traj_data in self.generated_trajectories:
+                        sample_id = traj_data['sample_id']
+                        intended_x = traj_data['intended_x']
+                        intended_y = traj_data['intended_y']
+                        trajectory = traj_data.get('trajectory', [])
+
+                        if trajectory:
+                            # Build path: intended point -> step 0 -> step 1 -> ... -> final
+                            path_x = [intended_x] + [t['x'] for t in trajectory]
+                            path_y = [intended_y] + [t['y'] for t in trajectory]
+                            steps = ['intended'] + [f"step {t['step']}" for t in trajectory]
+                            # Image paths: None for intended, then step images
+                            img_paths = [None] + [t.get('image_path') for t in trajectory]
+
+                            # Add trajectory line (dotted)
+                            fig.add_trace(go.Scatter(
+                                x=path_x,
+                                y=path_y,
+                                mode='lines+markers',
+                                line=dict(color='rgba(0, 180, 0, 0.7)', width=3, dash='dot'),
+                                marker=dict(size=8, color='rgba(0, 180, 0, 0.8)'),
+                                name=f'Trajectory: {sample_id}',
+                                text=steps,
+                                customdata=[[sample_id, step, img] for step, img in zip(steps, img_paths)],
+                                hovertemplate=f'{sample_id}<br>%{{text}}<br>(%{{x:.3f}}, %{{y:.3f}})<extra></extra>',
+                                showlegend=False
+                            ))
+
+                            # Add hollow circle at intended point
+                            fig.add_trace(go.Scatter(
+                                x=[intended_x],
+                                y=[intended_y],
+                                mode='markers',
+                                marker=dict(
+                                    size=10,
+                                    color='rgba(255,255,255,0)',
+                                    line=dict(width=2, color='#00CC00')
+                                ),
+                                name='Intended',
+                                customdata=[[sample_id, 'intended', None]],  # Match trajectory format
+                                hovertemplate=f'{sample_id}<br>intended<br>(%{{x:.3f}}, %{{y:.3f}})<extra></extra>',
+                                showlegend=False
+                            ))
 
                 # Add bright overlay for generated points
                 is_generated_col = self.df.get('is_generated', pd.Series([False] * len(self.df)))
@@ -1189,6 +1361,58 @@ class DMD2Visualizer:
                 print(error_msg)
                 print(traceback.format_exc())
                 return error_msg, dash.no_update, dash.no_update
+
+        # Clear Generated callback
+        @self.app.callback(
+            Output("umap-scatter", "figure", allow_duplicate=True),
+            Output("generation-status", "children", allow_duplicate=True),
+            Output("selected-point-store", "data", allow_duplicate=True),
+            Output("manual-neighbors-store", "data", allow_duplicate=True),
+            Output("neighbor-indices-store", "data", allow_duplicate=True),
+            Output("selected-image", "children", allow_duplicate=True),
+            Output("selected-details", "children", allow_duplicate=True),
+            Input("clear-generated-btn", "n_clicks"),
+            State("umap-scatter", "figure"),
+            prevent_initial_call=True
+        )
+        def clear_generated(n_clicks, current_fig):
+            if not n_clicks:
+                return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+            # Remove generated samples from dataframe
+            if 'is_generated' in self.df.columns:
+                self.df = self.df[~self.df['is_generated']].reset_index(drop=True)
+
+            # Clear stored trajectories
+            if hasattr(self, 'generated_trajectories'):
+                self.generated_trajectories = []
+
+            # Refit nearest neighbors
+            self.fit_nearest_neighbors()
+
+            # Regenerate plot without generated points/trajectories
+            color_col = 'class_label' if 'class_label' in self.df.columns else None
+            hover_data = ['class_label'] if 'class_label' in self.df.columns else []
+
+            fig = px.scatter(
+                self.df,
+                x='umap_x',
+                y='umap_y',
+                color=color_col,
+                hover_data=hover_data + ['sample_id'],
+                title="DMD2 Activation UMAP",
+                labels={'umap_x': 'UMAP 1', 'umap_y': 'UMAP 2'}
+            )
+            fig.update_traces(marker=dict(size=5, opacity=0.7))
+            fig.update_layout(hovermode='closest', template='plotly_white')
+
+            # Reset selection state
+            empty_selection_img = html.Div("Click a point to select", className="text-muted")
+            empty_selection_details = html.Div("No sample selected", className="text-muted small")
+
+            return (fig, "Generated samples cleared",
+                    None, [], None,  # selected-point, manual-neighbors, knn-neighbors
+                    empty_selection_img, empty_selection_details)
 
     def run(self, debug: bool = False, port: int = 8050):
         """Run the Dash app."""
