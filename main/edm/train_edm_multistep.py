@@ -70,7 +70,6 @@ class TrainerMultistep:
         self.previous_time = None
         self.step = 0
         self.cache_checkpoints = (args.cache_dir != "")
-        self.max_checkpoint = args.max_checkpoint
 
         # Multi-step specific
         self.denoising = args.denoising
@@ -163,7 +162,6 @@ class TrainerMultistep:
 
         self.label_dim = args.label_dim
         self.eye_matrix = torch.eye(self.label_dim, device=accelerator.device)
-        self.delete_ckpts = args.delete_ckpts
         self.keep_checkpoints = args.keep_checkpoints
         self.max_grad_norm = args.max_grad_norm
 
@@ -193,19 +191,13 @@ class TrainerMultistep:
 
         self.accelerator.save_state(output_path)
 
-        # Checkpoint cleanup logic
+        # Checkpoint cleanup: keep N most recent checkpoints
         if self.keep_checkpoints is not None:
-            # New behavior: keep N most recent checkpoints
             checkpoints = sorted(
                 [f for f in os.listdir(self.output_path) if f.startswith("checkpoint_model")]
             )
             if len(checkpoints) > self.keep_checkpoints:
                 for folder in checkpoints[:-self.keep_checkpoints]:
-                    shutil.rmtree(os.path.join(self.output_path, folder))
-        elif self.delete_ckpts:
-            # Legacy behavior: delete all but current
-            for folder in os.listdir(self.output_path):
-                if folder.startswith("checkpoint_model") and folder != f"checkpoint_model_{self.step:06d}":
                     shutil.rmtree(os.path.join(self.output_path, folder))
 
         if self.cache_checkpoints:
@@ -217,13 +209,14 @@ class TrainerMultistep:
                 os.path.join(self.cache_dir, f"checkpoint_model_{self.step:06d}")
             )
 
-            checkpoints = sorted(
-                [folder for folder in os.listdir(self.cache_dir) if folder.startswith("checkpoint_model")]
-            )
-
-            if len(checkpoints) > self.max_checkpoint:
-                for folder in checkpoints[:-self.max_checkpoint]:
-                    shutil.rmtree(os.path.join(self.cache_dir, folder))
+            # Also apply keep_checkpoints to cache dir
+            if self.keep_checkpoints is not None:
+                checkpoints = sorted(
+                    [folder for folder in os.listdir(self.cache_dir) if folder.startswith("checkpoint_model")]
+                )
+                if len(checkpoints) > self.keep_checkpoints:
+                    for folder in checkpoints[:-self.keep_checkpoints]:
+                        shutil.rmtree(os.path.join(self.cache_dir, folder))
 
         print("done saving")
 
@@ -516,8 +509,6 @@ def parse_args():
     parser.add_argument("--rho", type=float, default=7.0)
     parser.add_argument("--dataset_name", type=str, default='imagenet')
     parser.add_argument("--ckpt_only_path", type=str, default=None, help="checkpoint (no optimizer state) only path")
-    parser.add_argument("--delete_ckpts", action="store_true", help="(deprecated) Delete all but latest checkpoint")
-    parser.add_argument("--max_checkpoint", type=int, default=200, help="(deprecated) Use --keep_checkpoints instead")
     parser.add_argument("--keep_checkpoints", type=int, default=None, help="Number of checkpoints to keep (deletes older ones). None = keep all.")
     parser.add_argument("--num_workers", type=int, default=12)
     parser.add_argument("--max_grad_norm", type=int, default=10)
