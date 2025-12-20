@@ -41,7 +41,7 @@ class DMD2Visualizer:
     def __init__(self, data_dir: Path, embeddings_path: Path = None, checkpoint_path: Path = None,
                  device: str = 'cuda', num_steps: int = 1, mask_steps: int = None,
                  guidance_scale: float = 1.0, sigma_max: float = 80.0, sigma_min: float = 0.002,
-                 label_dropout: float = 0.0):
+                 label_dropout: float = 0.0, standard_labels: bool = False):
         """
         Args:
             data_dir: Root data directory
@@ -54,6 +54,7 @@ class DMD2Visualizer:
             sigma_max: Maximum sigma for denoising schedule
             sigma_min: Minimum sigma for denoising schedule
             label_dropout: Label dropout for model config (use 0.1 for CFG models)
+            standard_labels: If True, skip ImageNet64->Standard class mapping (model uses standard labels)
         """
         self.data_dir = Path(data_dir)
         self.embeddings_path = embeddings_path
@@ -65,6 +66,7 @@ class DMD2Visualizer:
         self.sigma_max = sigma_max
         self.sigma_min = sigma_min
         self.label_dropout = label_dropout
+        self.standard_labels = standard_labels
         self.df = None
         self.umap_params = None
         self.activations = None
@@ -73,6 +75,7 @@ class DMD2Visualizer:
         self.selected_point = None  # Currently selected point
         self.neighbor_indices = None  # Indices of neighbors
         self.class_labels = {}  # ImageNet class labels
+        self.imagenet64_to_standard = {}  # Mapping from ImageNet64 to standard indices
 
         # For generation from activations
         self.umap_reducer = None  # UMAP model for inverse_transform
@@ -96,21 +99,45 @@ class DMD2Visualizer:
         self.register_callbacks()
 
     def load_class_labels(self):
-        """Load ImageNet class labels."""
+        """Load ImageNet class labels and build index mapping."""
         # Try ImageNet64-specific labels first (for NPZ data), fall back to standard
         label_path = self.data_dir / "imagenet64_class_labels.json"
         if not label_path.exists():
             label_path = self.data_dir / "imagenet_class_labels.json"
 
+        imagenet64_synset_to_idx = {}  # synset -> ImageNet64 index
         if label_path.exists():
             with open(label_path, 'r') as f:
                 raw_labels = json.load(f)
                 # Convert to dict with integer keys
                 self.class_labels = {int(k): v[1] for k, v in raw_labels.items()}
+                # Also build synset -> index mapping
+                for k, v in raw_labels.items():
+                    imagenet64_synset_to_idx[v[0]] = int(k)  # v[0] is synset_id
             print(f"Loaded {len(self.class_labels)} ImageNet class labels")
         else:
             print(f"Warning: Class labels not found at {label_path}")
             self.class_labels = {}
+
+        # Load standard ImageNet mapping to build index conversion (unless using standard labels)
+        if not self.standard_labels:
+            standard_path = self.data_dir / "imagenet_standard_class_index.json"
+            if standard_path.exists() and imagenet64_synset_to_idx:
+                with open(standard_path, 'r') as f:
+                    standard_labels = json.load(f)
+                    # Build synset -> standard index mapping
+                    synset_to_standard = {v[0]: int(k) for k, v in standard_labels.items()}
+
+                    # Build ImageNet64 -> Standard index mapping
+                    for synset, idx64 in imagenet64_synset_to_idx.items():
+                        if synset in synset_to_standard:
+                            self.imagenet64_to_standard[idx64] = synset_to_standard[synset]
+
+                print(f"Built ImageNet64->Standard mapping for {len(self.imagenet64_to_standard)} classes")
+            else:
+                print("Warning: Standard ImageNet mapping not found, using labels as-is")
+        else:
+            print("Using standard labels (no ImageNet64->Standard mapping)")
 
     def get_class_name(self, class_id):
         """Get human-readable class name for a class ID."""
@@ -1103,11 +1130,16 @@ class DMD2Visualizer:
                 print("[GEN] Starting image generation...", flush=True)
 
                 # Generate image (use same class as selected point if available)
+                # Convert from ImageNet64 index to standard if mapping is available
                 class_label = None
                 if 'class_label' in self.df.columns:
-                    class_label = int(self.df.iloc[selected_idx]['class_label'])
-                    print(f"Using class_label from selected sample: {class_label}")
-                #class_label = -1
+                    data_label = int(self.df.iloc[selected_idx]['class_label'])
+                    if self.imagenet64_to_standard and data_label in self.imagenet64_to_standard:
+                        class_label = self.imagenet64_to_standard[data_label]
+                        print(f"Converted class_label: ImageNet64[{data_label}] -> Standard[{class_label}] ({self.get_class_name(data_label)})")
+                    else:
+                        class_label = data_label
+                        print(f"Using class_label directly: {class_label} ({self.get_class_name(class_label)})")
 
                 # Create extractor to capture actual activations during generation
                 extractor = ActivationExtractor("imagenet")
@@ -1496,6 +1528,11 @@ def main():
         default=None,
         help="Steps to apply activation mask (default=num_steps, use 1 for first-step-only)"
     )
+    parser.add_argument(
+        "--standard-labels",
+        action="store_true",
+        help="Model uses standard ImageNet labels (skip ImageNet64->Standard mapping)"
+    )
 
     args = parser.parse_args()
 
@@ -1509,7 +1546,8 @@ def main():
         guidance_scale=args.guidance_scale,
         sigma_max=args.sigma_max,
         sigma_min=args.sigma_min,
-        label_dropout=args.label_dropout
+        label_dropout=args.label_dropout,
+        standard_labels=args.standard_labels
     )
 
     visualizer.run(debug=args.debug, port=args.port)
