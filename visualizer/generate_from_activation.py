@@ -13,6 +13,21 @@ import os
 from activation_masking import ActivationMask, unflatten_activation
 
 
+def tensor_to_uint8_image(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Convert a tensor in [-1, 1] range to uint8 image tensor in [0, 255].
+
+    Args:
+        tensor: Image tensor (B, C, H, W) in range [-1, 1]
+
+    Returns:
+        uint8 tensor (B, H, W, C) in range [0, 255]
+    """
+    images = ((tensor + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+    images = images.permute(0, 2, 3, 1).cpu()
+    return images
+
+
 def get_denoising_sigmas(num_steps, sigma_max, sigma_min, rho=7.0):
     """
     Generate Karras sigma schedule for multi-step denoising.
