@@ -165,7 +165,10 @@ def generate_with_masked_activation_multistep(
     num_samples: int = 1,
     resolution: int = 64,
     device: str = 'cuda',
-    seed: int = None
+    seed: int = None,
+    extract_layers: list = None,
+    return_trajectory: bool = False,
+    return_intermediates: bool = False
 ):
     """
     Generate images with fixed activation using multi-step denoising.
@@ -186,15 +189,29 @@ def generate_with_masked_activation_multistep(
         resolution: Image resolution (64 for ImageNet)
         device: Device to generate on
         seed: Random seed for noise
+        extract_layers: List of layer names to extract for trajectory (concatenated)
+        return_trajectory: If True, return activations at each step
+        return_intermediates: If True, return intermediate images at each step
 
     Returns:
         Generated images as tensor (N, H, W, 3) uint8, labels
+        If return_trajectory=True: also returns list of activations per step
+        If return_intermediates=True: also returns list of intermediate images per step
     """
     # Default: mask all steps (backward compatible)
     if mask_steps is None:
         mask_steps = num_steps
     if seed is not None:
         torch.manual_seed(seed)
+
+    # Set up trajectory extraction if requested
+    trajectory_activations = []
+    intermediate_images = []
+    extractor = None
+    if return_trajectory and extract_layers:
+        from extract_activations import ActivationExtractor
+        extractor = ActivationExtractor("imagenet")
+        extractor.register_hooks(generator, extract_layers)
 
     # Generate random labels if not specified
     if class_label is not None and class_label < 0:
@@ -235,6 +252,29 @@ def generate_with_masked_activation_multistep(
             # No guidance
             pred = generator(x, sigma_tensor, one_hot_labels)
 
+        # Extract activation for trajectory if enabled
+        if extractor is not None:
+            acts = extractor.get_activations()
+            # Concatenate all layers in sorted order (same as UMAP training)
+            layer_acts = []
+            for layer_name in sorted(extract_layers):
+                act = acts.get(layer_name)
+                if act is not None:
+                    # Flatten spatial dims: (B, C, H, W) -> (B, C*H*W)
+                    if len(act.shape) == 4:
+                        B, C, H, W = act.shape
+                        act = act.reshape(B, -1)
+                    layer_acts.append(act.numpy())
+            if layer_acts:
+                # Concatenate along feature dimension
+                concat_act = np.concatenate(layer_acts, axis=1)
+                trajectory_activations.append(concat_act)
+            extractor.clear_activations()
+
+        # Capture intermediate image if requested
+        if return_intermediates:
+            intermediate_images.append(tensor_to_uint8_image(pred))
+
         # Transition to next step
         if i < len(sigmas) - 1:
             next_sigma = sigmas[i + 1]
@@ -248,11 +288,22 @@ def generate_with_masked_activation_multistep(
             # Final step - use prediction directly
             x = pred
 
+    # Cleanup extractor hooks
+    if extractor is not None:
+        extractor.remove_hooks()
+
     # Convert to uint8 images
     images = ((x + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
     images = images.permute(0, 2, 3, 1).cpu()
 
-    return images, random_labels.cpu()
+    # Build return tuple based on requested outputs
+    result = [images, random_labels.cpu()]
+    if return_trajectory:
+        result.append(trajectory_activations)
+    if return_intermediates:
+        result.append(intermediate_images)
+
+    return tuple(result) if len(result) > 2 else (result[0], result[1])
 
 
 def save_generated_sample(
