@@ -21,6 +21,7 @@ from main.edm.edm_network import get_imagenet_edm_config
 # Local imports
 from extract_activations import ActivationExtractor
 from device_utils import get_device, get_device_info, move_to_device
+from class_mapping import remap_imagenet64_labels_to_standard, remap_imagenet64_label
 
 
 def get_imagenet_config():
@@ -177,11 +178,13 @@ def extract_real_imagenet_activations(
     extractor = ActivationExtractor(model_type="imagenet")
     extractor.register_hooks(generator, layers)
 
-    # Load ImageNet class labels (use ImageNet64-specific mapping for NPZ files)
+    # Load ImageNet class labels
+    # NPZ files use ImageNet64 ordering (different from standard ImageNet)
+    # JPEG directories use synset-based structure, so we use standard ImageNet indices
     if npz_dir:
         class_labels_path = Path(__file__).parent / "data" / "imagenet64_class_labels.json"
     else:
-        class_labels_path = Path(__file__).parent / "data" / "imagenet_class_labels.json"
+        class_labels_path = Path(__file__).parent / "data" / "imagenet_standard_class_index.json"
     with open(class_labels_path, 'r', encoding='utf-8') as f:
         class_labels_map = json.load(f)
 
@@ -349,7 +352,10 @@ def extract_real_imagenet_activations(
             batch_tensor = torch.from_numpy(batch_images_np).float().to(device)
             batch_tensor = (batch_tensor / 127.5) - 1.0
 
-            batch_labels_tensor = torch.from_numpy(batch_labels).long().to(device)
+            # Remap ImageNet64 labels to standard ImageNet indices for the generator
+            # (pretrained model expects standard ImageNet class ordering)
+            batch_labels_standard = remap_imagenet64_labels_to_standard(batch_labels)
+            batch_labels_tensor = torch.from_numpy(batch_labels_standard).long().to(device)
             one_hot_labels = torch.eye(1000, device=device)[batch_labels_tensor]
 
             # Get class names and synsets

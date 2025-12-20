@@ -8,12 +8,15 @@ Usage:
 
 NPZ format (from image-net.org):
     - data: (N, 12288) uint8 - flattened RGB images
-    - labels: (N,) int64 - class labels 1-1000
+    - labels: (N,) int64 - class labels 1-1000 (ImageNet64 ordering)
     - mean: (12288,) float64 - mean image
 
 LMDB format (for DMD2):
     - images: (N, 3, 64, 64) uint8 - CHW format
-    - labels: (N, 1) int64 - class labels 0-999
+    - labels: (N, 1) int64 - class labels 0-999 (STANDARD ImageNet ordering)
+
+IMPORTANT: ImageNet64 NPZ uses a different class ordering than standard ImageNet.
+This script remaps labels to match standard ImageNet ordering used by pretrained models.
 """
 
 import numpy as np
@@ -21,7 +24,12 @@ import argparse
 import lmdb
 import glob
 import os
+import sys
 from tqdm import tqdm
+
+# Add parent dir to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from visualizer.class_mapping import remap_imagenet64_labels_to_standard
 
 
 def store_arrays_to_lmdb(env, arrays_dict, start_index=0):
@@ -59,8 +67,10 @@ def convert_npz_to_lmdb(npz_dir, lmdb_path, map_size_gb=50):
         # Get images and reshape from (N, 12288) to (N, 3, 64, 64)
         images = data['data'].reshape(-1, 3, 64, 64).astype(np.uint8)
 
-        # Get labels and convert from 1-1000 to 0-999, reshape to (N, 1)
-        labels = (data['labels'] - 1).astype(np.int64).reshape(-1, 1)
+        # Get labels: convert from 1-indexed to 0-indexed, then remap to standard ImageNet
+        labels_0indexed = (data['labels'] - 1).astype(np.int64)
+        labels_remapped = remap_imagenet64_labels_to_standard(labels_0indexed)
+        labels = labels_remapped.reshape(-1, 1)
 
         # Verify shapes
         assert images.shape[1:] == (3, 64, 64), f"Unexpected image shape: {images.shape}"
