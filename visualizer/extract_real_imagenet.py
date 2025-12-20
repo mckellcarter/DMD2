@@ -42,12 +42,14 @@ def get_imagenet_config():
 
 def load_imagenet_model(checkpoint_path: str, device: str = "cuda"):
     """Load pretrained ImageNet generator."""
+    from model_utils import load_checkpoint
+
     base_config = get_imagenet_config()
     generator = EDMPrecond(**base_config)
     del generator.model.map_augment
     generator.model.map_augment = None
 
-    state_dict = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = load_checkpoint(checkpoint_path, device="cpu")
     generator.load_state_dict(state_dict, strict=True)
     generator = move_to_device(generator, device)
     generator.eval()
@@ -178,13 +180,10 @@ def extract_real_imagenet_activations(
     extractor = ActivationExtractor(model_type="imagenet")
     extractor.register_hooks(generator, layers)
 
-    # Load ImageNet class labels
-    # NPZ files use ImageNet64 ordering (different from standard ImageNet)
-    # JPEG directories use synset-based structure, so we use standard ImageNet indices
-    if npz_dir:
-        class_labels_path = Path(__file__).parent / "data" / "imagenet64_class_labels.json"
-    else:
-        class_labels_path = Path(__file__).parent / "data" / "imagenet_standard_class_index.json"
+    # Load ImageNet class labels (always use standard ordering for consistency)
+    # Labels are remapped to standard ordering before model inference,
+    # so we store standard labels in metadata for consistency
+    class_labels_path = Path(__file__).parent / "data" / "imagenet_standard_class_index.json"
     with open(class_labels_path, 'r', encoding='utf-8') as f:
         class_labels_map = json.load(f)
 
@@ -358,12 +357,12 @@ def extract_real_imagenet_activations(
             batch_labels_tensor = torch.from_numpy(batch_labels_standard).long().to(device)
             one_hot_labels = torch.eye(1000, device=device)[batch_labels_tensor]
 
-            # Get class names and synsets
+            # Get class names and synsets using STANDARD labels (matches what model receives)
             batch_synsets = []
             batch_class_names = []
             batch_original_paths = []
 
-            for idx, label_id in enumerate(batch_labels):
+            for idx, label_id in enumerate(batch_labels_standard):
                 label_str = str(int(label_id))
                 if label_str in class_labels_map:
                     synset_id, class_name = class_labels_map[label_str]
@@ -415,12 +414,12 @@ def extract_real_imagenet_activations(
                 **activation_dict
             )
 
-            # Save batch metadata (JSON) with ImageNet identifiers
+            # Save batch metadata (JSON) with Standard ImageNet labels
             batch_samples_meta = []
             for i in range(current_batch_size):
                 batch_samples_meta.append({
                     "batch_index": i,
-                    "class_id": int(batch_labels[i]),
+                    "class_id": int(batch_labels_standard[i]),
                     "synset_id": batch_synsets[i],
                     "class_name": batch_class_names[i],
                     "original_path": batch_original_paths[i]
@@ -448,10 +447,10 @@ def extract_real_imagenet_activations(
                 reconstructed_path = reconstructed_dir / f"{sample_id}.png"
                 Image.fromarray(reconstructed_images_uint8[i]).save(reconstructed_path)
 
-                # Track metadata
+                # Track metadata (use Standard labels - matches what model received)
                 all_metadata.append({
                     "sample_id": sample_id,
-                    "class_label": int(batch_labels[i]),
+                    "class_label": int(batch_labels_standard[i]),
                     "synset_id": batch_synsets[i],
                     "class_name": batch_class_names[i],
                     "image_path": str(img_path.relative_to(output_dir)),
@@ -547,7 +546,7 @@ def extract_real_imagenet_activations(
                 **activation_dict
             )
 
-            # Save batch metadata (JSON) with ImageNet identifiers
+            # Save batch metadata (JSON) with Standard ImageNet labels
             batch_samples_meta = []
             for i in range(current_batch_size):
                 batch_samples_meta.append({
@@ -579,7 +578,7 @@ def extract_real_imagenet_activations(
                 reconstructed_path = reconstructed_dir / f"{sample_id}.png"
                 Image.fromarray(reconstructed_images_uint8[i]).save(reconstructed_path)
 
-                # Track metadata
+                # Track metadata (Standard labels - from synset lookup)
                 all_metadata.append({
                     "sample_id": sample_id,
                     "class_label": int(batch_labels[i]),
