@@ -39,12 +39,14 @@ def get_imagenet_config():
 
 def load_imagenet_model(checkpoint_path: str, device: str = "cuda"):
     """Load pretrained ImageNet generator."""
+    from model_utils import load_checkpoint
+
     base_config = get_imagenet_config()
     generator = EDMPrecond(**base_config)
     del generator.model.map_augment
     generator.model.map_augment = None
 
-    state_dict = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = load_checkpoint(checkpoint_path, device="cpu")
     generator.load_state_dict(state_dict, strict=True)
     generator = move_to_device(generator, device)
     generator.eval()
