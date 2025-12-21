@@ -28,6 +28,7 @@ from tqdm import tqdm
 import json
 import time
 import os
+import pickle
 
 from extract_activations import load_activations, flatten_activations
 
@@ -175,6 +176,9 @@ def compute_umap_single_gpu(
 ):
     """
     Compute UMAP using single CUDA GPU (cuML).
+
+    Returns:
+        (embeddings, reducer, scaler) tuple for pkl saving
     """
     print(f"\nComputing UMAP with cuML (single GPU):")
     print(f"  n_neighbors={n_neighbors}")
@@ -190,6 +194,7 @@ def compute_umap_single_gpu(
     activations_gpu = cp.asarray(activations, dtype=cp.float32)
 
     # Normalize on GPU
+    scaler = None
     if normalize:
         print("Normalizing on GPU...")
         scaler = cumlStandardScaler()
@@ -216,7 +221,7 @@ def compute_umap_single_gpu(
     print(f"\nUMAP completed in {elapsed:.1f}s")
     print(f"Embeddings shape: {embeddings.shape}")
 
-    return embeddings
+    return embeddings, reducer, scaler
 
 
 def compute_umap_multi_gpu(
@@ -231,6 +236,10 @@ def compute_umap_multi_gpu(
 ):
     """
     Compute UMAP using multiple GPUs via Dask-cuML.
+
+    Returns:
+        (embeddings, reducer, scaler) tuple for pkl saving
+        Note: Multi-GPU reducer/scaler may not support inverse_transform
     """
     if num_gpus is None:
         num_gpus = get_gpu_count()
@@ -249,6 +258,9 @@ def compute_umap_multi_gpu(
     cluster = LocalCUDACluster(n_workers=num_gpus)
     client = Client(cluster)
     print(f"Dask dashboard: {client.dashboard_link}")
+
+    scaler = None
+    reducer = None
 
     try:
         # Convert to Dask array and distribute across GPUs
@@ -291,7 +303,7 @@ def compute_umap_multi_gpu(
     print(f"\nUMAP completed in {elapsed:.1f}s")
     print(f"Embeddings shape: {embeddings.shape}")
 
-    return embeddings
+    return embeddings, reducer, scaler
 
 
 def compute_umap_cpu(
@@ -305,6 +317,9 @@ def compute_umap_cpu(
 ):
     """
     Fallback CPU UMAP implementation.
+
+    Returns:
+        (embeddings, reducer, scaler) tuple for pkl saving
     """
     print(f"\nComputing UMAP with CPU (fallback):")
     print(f"  n_neighbors={n_neighbors}")
@@ -313,6 +328,7 @@ def compute_umap_cpu(
 
     start_time = time.time()
 
+    scaler = None
     if normalize:
         print("Normalizing...")
         scaler = cpuStandardScaler()
@@ -334,17 +350,19 @@ def compute_umap_cpu(
     print(f"\nUMAP completed in {elapsed:.1f}s")
     print(f"Embeddings shape: {embeddings.shape}")
 
-    return embeddings
+    return embeddings, reducer, scaler
 
 
 def save_embeddings(
     embeddings: np.ndarray,
     metadata_df: pd.DataFrame,
     output_path: Path,
-    umap_params: dict
+    umap_params: dict,
+    reducer=None,
+    scaler=None
 ):
     """
-    Save UMAP embeddings + metadata to CSV.
+    Save UMAP embeddings + metadata to CSV, and optionally save model pkl.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -365,6 +383,20 @@ def save_embeddings(
     with open(param_path, 'w') as f:
         json.dump(umap_params, f, indent=2)
     print(f"Saved parameters to {param_path}")
+
+    # Save UMAP model and scaler for inverse_transform
+    if reducer is not None:
+        model_path = output_path.with_suffix('.pkl')
+        try:
+            with open(model_path, 'wb') as f:
+                pickle.dump({
+                    'reducer': reducer,
+                    'scaler': scaler
+                }, f)
+            print(f"Saved UMAP model to {model_path}")
+        except Exception as e:
+            print(f"Warning: Could not save UMAP model: {e}")
+            print("(cuML models may not be picklable - inverse_transform unavailable)")
 
 
 def main():
@@ -486,7 +518,7 @@ def main():
     normalize = not args.no_normalize
 
     if use_multi_gpu:
-        embeddings = compute_umap_multi_gpu(
+        embeddings, reducer, scaler = compute_umap_multi_gpu(
             activations,
             n_neighbors=args.n_neighbors,
             min_dist=args.min_dist,
@@ -498,7 +530,7 @@ def main():
         )
         backend = f"dask-cuml-{args.num_gpus or gpu_count}gpu"
     elif use_single_gpu:
-        embeddings = compute_umap_single_gpu(
+        embeddings, reducer, scaler = compute_umap_single_gpu(
             activations,
             n_neighbors=args.n_neighbors,
             min_dist=args.min_dist,
@@ -509,7 +541,7 @@ def main():
         )
         backend = "cuml"
     else:
-        embeddings = compute_umap_cpu(
+        embeddings, reducer, scaler = compute_umap_cpu(
             activations,
             n_neighbors=args.n_neighbors,
             min_dist=args.min_dist,
@@ -536,7 +568,7 @@ def main():
         "backend": backend
     }
 
-    save_embeddings(embeddings, metadata_df, output_path, umap_params)
+    save_embeddings(embeddings, metadata_df, output_path, umap_params, reducer, scaler)
 
     print("\nDone!")
 

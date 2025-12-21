@@ -105,4 +105,5 @@ python visualizer/process_embeddings_cuda.py \
 echo "======================================"
 echo "UMAP Complete!"
 echo "======================================"
-echo "Output: $OUTPUT_PATH/imagenet_real_umap_n${N_NEIGHBORS}_d${MIN_DIST}.csv"
+echo "Embeddings: $OUTPUT_PATH/imagenet_real_umap_n${N_NEIGHBORS}_d${MIN_DIST}.csv"
+echo "Model: $OUTPUT_PATH/imagenet_real_umap_n${N_NEIGHBORS}_d${MIN_DIST}.pkl"
