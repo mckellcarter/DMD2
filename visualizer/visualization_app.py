@@ -143,7 +143,7 @@ class DMD2Visualizer:
             else:
                 self.umap_params = {}
 
-            # Load UMAP model for inverse_transform
+            # Load UMAP model for inverse_transform (optional)
             model_path = Path(self.embeddings_path).with_suffix('.pkl')
             if model_path.exists():
                 print(f"Loading UMAP model from {model_path}")
@@ -152,12 +152,13 @@ class DMD2Visualizer:
                     self.umap_reducer = model_data['reducer']
                     self.umap_scaler = model_data['scaler']
                 print("UMAP model loaded (inverse_transform available)")
-                ##Debug, don't need to load activations here. 
-                if self.activations is None:
-                    self.activations, self.metadata_df = self.load_activations_for_model("imagenet_real")
             else:
-                print(f"Warning: UMAP model not found at {model_path}")
-                print("Generation from neighbors will not be available")
+                print(f"Note: UMAP pkl not found at {model_path}")
+                print("(Generation still works - uses neighbor averaging)")
+
+            # Always load activations for generation
+            if self.activations is None:
+                self.activations, self.metadata_df = self.load_activations_for_model("imagenet_real")
 
             print(f"Loaded {len(self.df)} samples")
         else:
