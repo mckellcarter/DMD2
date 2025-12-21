@@ -677,8 +677,9 @@ class DMD2Visualizer:
                     className="text-info small"
                 ))
 
-                # Enable generate button only if we have checkpoint and UMAP model
-                generate_enabled = not (self.checkpoint_path is None or self.umap_reducer is None)
+                # Enable generate button only if we have checkpoint
+                # (umap_reducer is optional - only used for diagnostic logging)
+                generate_enabled = self.checkpoint_path is not None
 
                 return (
                     img_element,
