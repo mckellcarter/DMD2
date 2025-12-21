@@ -54,11 +54,17 @@ try:
 except ImportError:
     pass
 
-if not CUML_AVAILABLE:
-    print("Warning: cuML not available. Install with: pip install cuml-cu12")
-    print("Falling back to CPU UMAP...")
+# Always import CPU versions for --force_cpu fallback
+try:
     from umap import UMAP as cpuUMAP
     from sklearn.preprocessing import StandardScaler as cpuStandardScaler
+    CPU_UMAP_AVAILABLE = True
+except ImportError:
+    CPU_UMAP_AVAILABLE = False
+
+if not CUML_AVAILABLE and not CPU_UMAP_AVAILABLE:
+    print("Error: Neither cuML nor umap-learn available")
+    print("Install with: pip install cuml-cu12  OR  pip install umap-learn")
 
 
 def get_gpu_count():
