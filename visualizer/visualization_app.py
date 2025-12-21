@@ -1160,44 +1160,55 @@ class DMD2Visualizer:
                 prev_act_scaled = None
                 prev_coords = None
                 if trajectory_acts is not None and len(trajectory_acts) > 0:
-                    print(f"[GEN] Projecting {len(trajectory_acts)} trajectory points through UMAP...")
-                    print(f"[DIAG] Comparing high-D vs UMAP distances between steps:")
-
                     # Create directory for intermediate images
                     intermediate_dir = self.data_dir / "images" / "intermediates"
                     intermediate_dir.mkdir(parents=True, exist_ok=True)
 
-                    for step_idx, act in enumerate(trajectory_acts):
-                        # Apply scaler if used during UMAP training
-                        act_scaled = act
-                        if self.umap_scaler is not None:
-                            act_scaled = self.umap_scaler.transform(act)
-                        # Project to 2D
-                        coords = self.umap_reducer.transform(act_scaled)
+                    # Only do UMAP projection if reducer is available
+                    if self.umap_reducer is not None:
+                        print(f"[GEN] Projecting {len(trajectory_acts)} trajectory points through UMAP...")
+                        print(f"[DIAG] Comparing high-D vs UMAP distances between steps:")
 
-                        # Diagnostic: Compare distances
-                        if prev_act_scaled is not None:
-                            high_d_dist = np.linalg.norm(act_scaled - prev_act_scaled)
-                            umap_dist = np.linalg.norm(coords - prev_coords)
-                            print(f"[DIAG] Step {step_idx-1}->{step_idx}: high-D={high_d_dist:.2f}, UMAP={umap_dist:.4f}, ratio={umap_dist/high_d_dist:.6f}")
-                        prev_act_scaled = act_scaled
-                        prev_coords = coords
+                        for step_idx, act in enumerate(trajectory_acts):
+                            # Apply scaler if used during UMAP training
+                            act_scaled = act
+                            if self.umap_scaler is not None:
+                                act_scaled = self.umap_scaler.transform(act)
+                            # Project to 2D
+                            coords = self.umap_reducer.transform(act_scaled)
 
-                        # Save intermediate image if available
-                        img_path = None
-                        if intermediate_imgs is not None and step_idx < len(intermediate_imgs):
-                            img_filename = f"sample_{len(self.df):06d}_step{step_idx}.png"
-                            img_path = f"images/intermediates/{img_filename}"
-                            full_path = self.data_dir / img_path
-                            Image.fromarray(intermediate_imgs[step_idx][0].numpy()).save(full_path)
+                            # Diagnostic: Compare distances
+                            if prev_act_scaled is not None:
+                                high_d_dist = np.linalg.norm(act_scaled - prev_act_scaled)
+                                umap_dist = np.linalg.norm(coords - prev_coords)
+                                print(f"[DIAG] Step {step_idx-1}->{step_idx}: high-D={high_d_dist:.2f}, UMAP={umap_dist:.4f}, ratio={umap_dist/high_d_dist:.6f}")
+                            prev_act_scaled = act_scaled
+                            prev_coords = coords
 
-                        trajectory_coords.append({
-                            'step': step_idx,
-                            'x': float(coords[0, 0]),
-                            'y': float(coords[0, 1]),
-                            'image_path': img_path
-                        })
-                    print(f"[GEN] Trajectory: {[(round(t['x'], 3), round(t['y'], 3)) for t in trajectory_coords]}")
+                            # Save intermediate image if available
+                            img_path = None
+                            if intermediate_imgs is not None and step_idx < len(intermediate_imgs):
+                                img_filename = f"sample_{len(self.df):06d}_step{step_idx}.png"
+                                img_path = f"images/intermediates/{img_filename}"
+                                full_path = self.data_dir / img_path
+                                Image.fromarray(intermediate_imgs[step_idx][0].numpy()).save(full_path)
+
+                            trajectory_coords.append({
+                                'step': step_idx,
+                                'x': float(coords[0, 0]),
+                                'y': float(coords[0, 1]),
+                                'image_path': img_path
+                            })
+                        print(f"[GEN] Trajectory: {[(round(t['x'], 3), round(t['y'], 3)) for t in trajectory_coords]}")
+                    else:
+                        # No UMAP reducer - just save intermediate images without trajectory
+                        print(f"[GEN] Saving {len(trajectory_acts)} intermediate images (no UMAP projection)")
+                        for step_idx in range(len(trajectory_acts)):
+                            if intermediate_imgs is not None and step_idx < len(intermediate_imgs):
+                                img_filename = f"sample_{len(self.df):06d}_step{step_idx}.png"
+                                img_path = f"images/intermediates/{img_filename}"
+                                full_path = self.data_dir / img_path
+                                Image.fromarray(intermediate_imgs[step_idx][0].numpy()).save(full_path)
 
                 # Save the generated sample
                 model_type = self.umap_params.get('model', 'imagenet')
