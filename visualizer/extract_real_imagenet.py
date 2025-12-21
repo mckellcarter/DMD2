@@ -1,6 +1,6 @@
 """
 Extract activations from real ImageNet images using DMD2 model.
-Supports both JPEG directory structure and ImageNet64 NPZ format.
+Supports LMDB, NPZ, and JPEG directory formats.
 """
 
 import argparse
@@ -22,6 +22,10 @@ from main.edm.edm_network import get_imagenet_edm_config
 from extract_activations import ActivationExtractor
 from device_utils import get_device, get_device_info, move_to_device
 from class_mapping import remap_imagenet64_labels_to_standard, remap_imagenet64_label
+
+# LMDB support
+import lmdb
+from main.utils import retrieve_row_from_lmdb, get_array_shape_from_lmdb
 
 
 def get_imagenet_config():
@@ -143,6 +147,7 @@ def extract_real_imagenet_activations(
     seed: int = 10,
     device: str = None,
     npz_dir: Optional[Path] = None,
+    lmdb_path: Optional[Path] = None,
     num_classes: int = 1000,
     target_classes: Optional[List[int]] = None
 ):
@@ -161,6 +166,7 @@ def extract_real_imagenet_activations(
         seed: Random seed for shuffling
         device: Device to use (auto-detect if None)
         npz_dir: Directory containing ImageNet64 NPZ files (alternative to imagenet_dir)
+        lmdb_path: Path to LMDB dataset (alternative to imagenet_dir/npz_dir)
         num_classes: Number of classes to sample from (default: 1000, all classes)
         target_classes: Specific class IDs to sample from. If None, randomly selects num_classes.
     """
@@ -202,10 +208,58 @@ def extract_real_imagenet_activations(
     activation_dir.mkdir(parents=True, exist_ok=True)
     metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine input format (NPZ or JPEG)
-    use_npz = npz_dir is not None
+    # Determine input format (LMDB, NPZ, or JPEG)
+    use_lmdb = lmdb_path is not None
+    use_npz = npz_dir is not None and not use_lmdb
 
-    if use_npz:
+    if use_lmdb:
+        # Load from LMDB dataset
+        print(f"\nOpening LMDB dataset: {lmdb_path}")
+        env = lmdb.open(str(lmdb_path), readonly=True, lock=False, readahead=False, meminit=False)
+
+        # Get dataset shape
+        image_shape = get_array_shape_from_lmdb(env, 'images')
+        label_shape = get_array_shape_from_lmdb(env, 'labels')
+        total_lmdb_samples = image_shape[0]
+
+        print(f"LMDB contains {total_lmdb_samples:,} samples")
+        print(f"Image shape: {image_shape[1:]}")
+
+        # Select target classes
+        set_seed(seed)
+        if target_classes is None:
+            target_classes = sorted(np.random.choice(1000, size=min(num_classes, 1000), replace=False).tolist())
+        else:
+            target_classes = sorted(target_classes)
+
+        print(f"Sampling from {len(target_classes)} classes: {target_classes[:10]}{'...' if len(target_classes) > 10 else ''}")
+
+        # Class-balanced sampling
+        samples_per_class = num_samples // len(target_classes)
+        print(f"Target: ~{samples_per_class} samples per class")
+
+        # Collect indices by scanning labels (LMDB has Standard labels already)
+        class_counts = {c: 0 for c in target_classes}
+        selected_indices = []
+
+        print("Scanning LMDB for target classes...")
+        for idx in tqdm(range(total_lmdb_samples), desc="Scanning labels"):
+            label = retrieve_row_from_lmdb(env, "labels", np.int64, label_shape[1:], idx)
+            label_int = int(label) if hasattr(label, 'item') else int(label.item() if hasattr(label, 'item') else label)
+
+            if label_int in target_classes and class_counts[label_int] < samples_per_class:
+                selected_indices.append(idx)
+                class_counts[label_int] += 1
+
+                if len(selected_indices) >= num_samples:
+                    break
+
+        print(f"Collected {len(selected_indices):,} samples")
+        print(f"Class distribution: min={min(class_counts.values())}, max={max(class_counts.values())}, mean={np.mean(list(class_counts.values())):.1f}")
+
+        all_image_paths = None
+
+    elif use_npz:
         # Load from NPZ files
         # Sort numerically by batch number (not alphabetically)
         npz_files = sorted(
@@ -315,7 +369,144 @@ def extract_real_imagenet_activations(
     sample_idx = 0
     all_metadata = []
 
-    if use_npz:
+    if use_lmdb:
+        # Process LMDB samples
+        num_batches = (len(selected_indices) + batch_size - 1) // batch_size
+
+        for batch_idx in tqdm(range(num_batches), desc="Processing batches"):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, len(selected_indices))
+            batch_indices = selected_indices[start_idx:end_idx]
+            current_batch_size = len(batch_indices)
+
+            # Load images and labels from LMDB (labels are already Standard)
+            batch_images_np = np.zeros((current_batch_size, 3, 64, 64), dtype=np.uint8)
+            batch_labels = np.zeros(current_batch_size, dtype=np.int64)
+
+            for i, lmdb_idx in enumerate(batch_indices):
+                img = retrieve_row_from_lmdb(env, "images", np.uint8, image_shape[1:], lmdb_idx)
+                label = retrieve_row_from_lmdb(env, "labels", np.int64, label_shape[1:], lmdb_idx)
+                batch_images_np[i] = img
+                batch_labels[i] = int(label) if hasattr(label, 'item') else int(label.item() if hasattr(label, 'item') else label)
+
+            # Convert to tensors and normalize to [-1, 1]
+            batch_tensor = torch.from_numpy(batch_images_np).float().to(device)
+            batch_tensor = (batch_tensor / 127.5) - 1.0
+
+            # LMDB has Standard labels already - no remapping needed
+            batch_labels_tensor = torch.from_numpy(batch_labels).long().to(device)
+            one_hot_labels = torch.eye(1000, device=device)[batch_labels_tensor]
+
+            # Get class names and synsets using Standard labels
+            batch_synsets = []
+            batch_class_names = []
+            batch_original_paths = []
+
+            for idx, label_id in enumerate(batch_labels):
+                label_str = str(int(label_id))
+                if label_str in class_labels_map:
+                    synset_id, class_name = class_labels_map[label_str]
+                else:
+                    synset_id = f"unknown_{label_id}"
+                    class_name = "unknown"
+
+                batch_synsets.append(synset_id)
+                batch_class_names.append(class_name)
+                batch_original_paths.append(f"lmdb_idx_{batch_indices[idx]}")
+
+            # Extract activations by running forward pass
+            extractor.clear_activations()
+            with torch.no_grad():
+                sigma = torch.ones(current_batch_size, device=device) * conditioning_sigma
+                reconstructed_images = generator(
+                    batch_tensor * conditioning_sigma,
+                    sigma,
+                    one_hot_labels
+                )
+
+            # Convert reconstructed images to uint8
+            reconstructed_images_uint8 = (
+                ((reconstructed_images + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+            )
+            reconstructed_images_uint8 = (
+                reconstructed_images_uint8.permute(0, 2, 3, 1).cpu().numpy()
+            )
+
+            # Get activations
+            activations = extractor.get_activations()
+
+            # Save batch activations
+            batch_id = f"batch_{batch_idx:06d}"
+            batch_act_path = activation_dir / batch_id
+
+            # Save activations (NPZ)
+            activation_dict = {}
+            for name, activation in activations.items():
+                if len(activation.shape) == 4:
+                    batch_dim = activation.shape[0]
+                    activation_dict[name] = activation.reshape(batch_dim, -1).cpu().numpy()
+                else:
+                    activation_dict[name] = activation.cpu().numpy()
+
+            np.savez_compressed(
+                str(batch_act_path.with_suffix('.npz')),
+                **activation_dict
+            )
+
+            # Save batch metadata (JSON) with Standard ImageNet labels
+            batch_samples_meta = []
+            for i in range(current_batch_size):
+                batch_samples_meta.append({
+                    "batch_index": i,
+                    "class_id": int(batch_labels[i]),
+                    "synset_id": batch_synsets[i],
+                    "class_name": batch_class_names[i],
+                    "original_path": batch_original_paths[i]
+                })
+
+            batch_metadata = {
+                "batch_size": current_batch_size,
+                "layers": layers,
+                "samples": batch_samples_meta
+            }
+
+            with open(batch_act_path.with_suffix('.json'), 'w', encoding='utf-8') as f:
+                json.dump(batch_metadata, f, indent=2)
+
+            # Save images and track metadata
+            for i in range(current_batch_size):
+                sample_id = f"sample_{sample_idx:06d}"
+
+                # Save original image (from LMDB, convert to PIL)
+                img_path = image_dir / f"{sample_id}.png"
+                img_np = batch_images_np[i].transpose(1, 2, 0)  # CHW -> HWC
+                Image.fromarray(img_np).save(img_path)
+
+                # Save reconstructed image
+                reconstructed_path = reconstructed_dir / f"{sample_id}.png"
+                Image.fromarray(reconstructed_images_uint8[i]).save(reconstructed_path)
+
+                # Track metadata (Standard labels from LMDB)
+                all_metadata.append({
+                    "sample_id": sample_id,
+                    "class_label": int(batch_labels[i]),
+                    "synset_id": batch_synsets[i],
+                    "class_name": batch_class_names[i],
+                    "image_path": str(img_path.relative_to(output_dir)),
+                    "reconstructed_path": str(reconstructed_path.relative_to(output_dir)),
+                    "activation_path": str(batch_act_path.relative_to(output_dir)),
+                    "batch_index": i,
+                    "original_path": batch_original_paths[i],
+                    "source": "imagenet_real_lmdb",
+                    "conditioning_sigma": conditioning_sigma
+                })
+
+                sample_idx += 1
+
+        # Close LMDB
+        env.close()
+
+    elif use_npz:
         num_batches = (len(selected_indices) + batch_size - 1) // batch_size
 
         for batch_idx in tqdm(range(num_batches), desc="Processing batches"):
@@ -643,6 +834,12 @@ def main():
         help="Directory containing ImageNet64 NPZ batch files (alternative to --imagenet_dir)"
     )
     parser.add_argument(
+        "--lmdb_path",
+        type=str,
+        default=None,
+        help="Path to ImageNet LMDB dataset (alternative to --imagenet_dir/--npz_dir, has Standard labels)"
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="data",
@@ -708,15 +905,19 @@ def main():
     args = parser.parse_args()
 
     # Validate input arguments
-    if args.imagenet_dir is None and args.npz_dir is None:
-        parser.error("Either --imagenet_dir or --npz_dir must be provided")
+    sources = [args.imagenet_dir, args.npz_dir, args.lmdb_path]
+    num_sources = sum(1 for s in sources if s is not None)
 
-    if args.imagenet_dir is not None and args.npz_dir is not None:
-        parser.error("Cannot use both --imagenet_dir and --npz_dir. Choose one.")
+    if num_sources == 0:
+        parser.error("One of --imagenet_dir, --npz_dir, or --lmdb_path must be provided")
+
+    if num_sources > 1:
+        parser.error("Cannot use multiple input sources. Choose one of --imagenet_dir, --npz_dir, or --lmdb_path.")
 
     output_dir = Path(args.output_dir)
     imagenet_dir = Path(args.imagenet_dir) if args.imagenet_dir else None
     npz_dir = Path(args.npz_dir) if args.npz_dir else None
+    lmdb_path = Path(args.lmdb_path) if args.lmdb_path else None
     layers = args.layers.split(",")
 
     # Parse target_classes
@@ -736,6 +937,7 @@ def main():
         seed=args.seed,
         device=args.device,
         npz_dir=npz_dir,
+        lmdb_path=lmdb_path,
         num_classes=args.num_classes,
         target_classes=target_classes
     )
