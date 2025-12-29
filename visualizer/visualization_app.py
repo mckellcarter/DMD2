@@ -8,7 +8,7 @@ import dash_bootstrap_components as dbc
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-import numpy as np
+import numpy
 from pathlib import Path
 from PIL import Image
 import base64
@@ -195,6 +195,18 @@ class DMD2Visualizer:
         except Exception as e:
             print(f"Error loading image {image_path}: {e}")
             return None
+
+    def _create_invisible_grid(self, x_range, y_range, resolution=50):
+        """Create invisible grid covering current view area for empty space clicks."""
+        x_min, x_max = x_range
+        y_min, y_max = y_range
+        # Add small padding to ensure coverage at edges
+        x_pad = (x_max - x_min) * 0.02
+        y_pad = (y_max - y_min) * 0.02
+        x_grid = numpy.linspace(x_min - x_pad, x_max + x_pad, resolution)
+        y_grid = numpy.linspace(y_min - y_pad, y_max + y_pad, resolution)
+        xx, yy = numpy.meshgrid(x_grid, y_grid)
+        return xx.flatten(), yy.flatten()
 
     def build_layout(self):
         """Build Dash layout."""
@@ -480,8 +492,82 @@ class DMD2Visualizer:
                 template='plotly_white'
             )
 
+            # Add invisible grid for empty space click detection
+            # Create new figure with grid first, then add original traces
+            grid_x, grid_y = self._create_invisible_grid(
+                (self.df['umap_x'].min(), self.df['umap_x'].max()),
+                (self.df['umap_y'].min(), self.df['umap_y'].max())
+            )
+            grid_trace = go.Scatter(
+                x=grid_x,
+                y=grid_y,
+                mode='markers',
+                marker=dict(opacity=0.01, size=20, color='lightgray'),
+                customdata=[{'type': 'grid', 'x': float(x), 'y': float(y)} for x, y in zip(grid_x, grid_y)],
+                name='_grid',
+                hoverinfo='text',
+                hovertext=['grid' for _ in grid_x],
+                showlegend=False
+            )
+            # Rebuild figure with grid first (so data points render on top)
+            new_fig = go.Figure(data=[grid_trace] + list(fig.data), layout=fig.layout)
+
             status = f"Showing {len(self.df)} samples | n_neighbors={n_neighbors}, min_dist={min_dist}"
-            return fig, status
+            return new_fig, status
+
+        @self.app.callback(
+            Output("umap-scatter", "figure", allow_duplicate=True),
+            Input("umap-scatter", "relayoutData"),
+            State("umap-scatter", "figure"),
+            prevent_initial_call=True
+        )
+        def update_grid_on_zoom(relayoutData, current_figure):
+            """Update grid when user zooms or pans."""
+            if relayoutData is None or current_figure is None:
+                return dash.no_update
+
+            # Extract new axis ranges from relayout data
+            x_range = None
+            y_range = None
+
+            if 'xaxis.range[0]' in relayoutData and 'xaxis.range[1]' in relayoutData:
+                x_range = (relayoutData['xaxis.range[0]'], relayoutData['xaxis.range[1]'])
+            if 'yaxis.range[0]' in relayoutData and 'yaxis.range[1]' in relayoutData:
+                y_range = (relayoutData['yaxis.range[0]'], relayoutData['yaxis.range[1]'])
+
+            # Only update if we have new ranges
+            if x_range is None and y_range is None:
+                return dash.no_update
+
+            # Use current data range as fallback
+            if x_range is None:
+                x_range = (self.df['umap_x'].min(), self.df['umap_x'].max())
+            if y_range is None:
+                y_range = (self.df['umap_y'].min(), self.df['umap_y'].max())
+
+            # Create new grid for current view
+            grid_x, grid_y = self._create_invisible_grid(x_range, y_range)
+
+            # Rebuild figure with updated grid
+            fig = go.Figure(current_figure)
+
+            # Remove old grid trace
+            other_traces = [trace for trace in fig.data if trace.name != '_grid']
+
+            # Create new grid trace
+            grid_trace = go.Scatter(
+                x=grid_x,
+                y=grid_y,
+                mode='markers',
+                marker=dict(opacity=0.01, size=20, color='lightgray'),
+                customdata=[{'type': 'grid', 'x': float(x), 'y': float(y)} for x, y in zip(grid_x, grid_y)],
+                name='_grid',
+                hoverinfo='text',
+                hovertext=['grid' for _ in grid_x],
+                showlegend=False
+            )
+            # Build new figure with grid first
+            return go.Figure(data=[grid_trace] + list(other_traces), layout=fig.layout)
 
         @self.app.callback(
             Output("hover-image", "children"),
@@ -496,11 +582,23 @@ class DMD2Visualizer:
             point_data = hoverData['points'][0]
             curve_number = point_data.get('curveNumber', 0)
 
+            # Check for grid points first (grid is now at index 0)
+            if 'customdata' in point_data:
+                customdata = point_data['customdata']
+                if isinstance(customdata, dict) and customdata.get('type') == 'grid':
+                    return "Click to create virtual point", html.Div(
+                        f"Grid point at ({customdata['x']:.2f}, {customdata['y']:.2f})",
+                        className="text-muted small"
+                    )
+
             # If hovering over non-main trace with customdata, check type to distinguish
+            # Grid is at index 0, main scatter at index 1
             # Trajectory points: customdata[0] is string (sample_id)
             # Generated overlay: customdata[0] is int (df index)
-            if curve_number > 0 and 'customdata' in point_data:
-                first_elem = point_data['customdata'][0]
+            if curve_number > 1 and 'customdata' in point_data:
+                customdata = point_data['customdata']
+
+                first_elem = customdata[0]
 
                 # Trajectory point: customdata = [sample_id_str, step_str, img_path]
                 if isinstance(first_elem, str):
@@ -531,10 +629,10 @@ class DMD2Visualizer:
                                     html.Img(
                                         src=img_b64,
                                         style={"width": "100%", "border": border_style, "borderRadius": "4px", "opacity": opacity}
-                                    ) if img_b64 else html.Div("?", style={"width": "60px", "height": "60px"}),
+                                    ) if img_b64 else html.Div("?", style={"width": "100%", "aspectRatio": "1"}),
                                     html.Div(f"Step {traj_point['step']}", className="text-center small",
                                              style={"fontWeight": "bold" if is_hovered else "normal"})
-                                ], style={"display": "inline-block", "margin": "2px", "textAlign": "center"}))
+                                ], style={"width": "45%", "margin": "2px", "textAlign": "center"}))
 
                         img_element = html.Div(grid_items, style={
                             "display": "flex", "flexWrap": "wrap", "justifyContent": "center"
@@ -637,8 +735,62 @@ class DMD2Visualizer:
             point_data = clickData['points'][0]
             curve_number = point_data.get('curveNumber', 0)
 
+            # Check for grid click (empty space) - customdata is a dict with type='grid'
+            if 'customdata' in point_data:
+                customdata = point_data['customdata']
+                if isinstance(customdata, dict) and customdata.get('type') == 'grid':
+                    # Empty space click - create virtual point
+                    clicked_x = customdata['x']
+                    clicked_y = customdata['y']
+
+                    # Create placeholder image element for virtual point
+                    img_element = html.Div([
+                        html.Div(
+                            "Virtual Point",
+                            className="text-center text-muted",
+                            style={"fontSize": "20px", "padding": "30px 0"}
+                        ),
+                        html.Div(
+                            f"({clicked_x:.3f}, {clicked_y:.3f})",
+                            className="text-center"
+                        )
+                    ], style={
+                        "width": "100%",
+                        "aspectRatio": "1",
+                        "border": "2px dashed #6c757d",
+                        "borderRadius": "4px",
+                        "display": "flex",
+                        "flexDirection": "column",
+                        "justifyContent": "center",
+                        "backgroundColor": "#f8f9fa"
+                    })
+
+                    details = [
+                        html.P([html.Strong("Type: "), "Virtual (Empty Space)"]),
+                        html.P([html.Strong("UMAP Coords: "), f"({clicked_x:.3f}, {clicked_y:.3f})"]),
+                        html.P(
+                            "Uses UMAP inverse_transform (noisy by design)",
+                            className="text-warning small"
+                        )
+                    ]
+
+                    # Enable generate button if checkpoint exists and UMAP reducer available
+                    generate_enabled = self.checkpoint_path is not None and self.umap_reducer is not None
+
+                    return (
+                        img_element,
+                        html.Div(details),
+                        self.umap_reducer is None,  # Disable find neighbors if no UMAP model
+                        not generate_enabled,  # Enable generate if checkpoint and UMAP available
+                        {'type': 'virtual', 'x': clicked_x, 'y': clicked_y},  # Virtual point data
+                        [],     # Reset manual neighbors
+                        {"fontSize": "20px", "lineHeight": "1", "display": "inline"},  # Show clear button
+                        None    # Clear KNN neighbors
+                    )
+
             # If clicked on non-main trace with customdata, check type
-            if curve_number > 0 and 'customdata' in point_data:
+            # Grid is at index 0, main scatter at index 1, other traces at 2+
+            if curve_number > 1 and 'customdata' in point_data:
                 first_elem = point_data['customdata'][0]
                 # Trajectory point (string customdata) - ignore clicks
                 if isinstance(first_elem, str):
@@ -646,7 +798,10 @@ class DMD2Visualizer:
                 # Generated overlay (int customdata)
                 point_idx = first_elem
             else:
-                point_idx = point_data['pointIndex']
+                point_idx = point_data.get('pointIndex')
+                # If no pointIndex, this shouldn't happen but handle gracefully
+                if point_idx is None:
+                    return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
             # Ensure lists are initialized
             if manual_neighbors is None:
@@ -736,6 +891,10 @@ class DMD2Visualizer:
             if selected_idx is None or self.df.empty:
                 return dash.no_update, dash.no_update
 
+            # Skip update for virtual points - they're handled in display_selected
+            if isinstance(selected_idx, dict) and selected_idx.get('type') == 'virtual':
+                return dash.no_update, dash.no_update
+
             # Get sample info
             sample = self.df.iloc[selected_idx]
             img_b64 = self.get_image_base64(sample['image_path'])
@@ -783,16 +942,35 @@ class DMD2Visualizer:
             if selected_idx is None or self.nn_model is None or self.activations is None:
                 return None
 
-            # Get high-D activation of selected point (scaled if scaler exists)
-            selected_act = self.activations[selected_idx:selected_idx+1]
-            if self.umap_scaler is not None:
-                selected_act = self.umap_scaler.transform(selected_act)
+            # Handle virtual points (empty space clicks)
+            is_virtual = isinstance(selected_idx, dict) and selected_idx.get('type') == 'virtual'
 
-            # Find neighbors in high-D space (k+1 to exclude the point itself)
-            distances, indices = self.nn_model.kneighbors(selected_act, n_neighbors=k+1)
+            if is_virtual:
+                # For virtual points: find nearest neighbors in 2D UMAP space
+                # (inverse_transform doesn't preserve correlation structure)
+                clicked_x = selected_idx['x']
+                clicked_y = selected_idx['y']
+                print(f"[KNN] Virtual point at ({clicked_x:.3f}, {clicked_y:.3f}) - using 2D proximity")
 
-            # Remove the point itself (first result)
-            neighbor_indices = indices[0][1:].tolist()
+                # Get UMAP coordinates from dataframe
+                umap_coords = self.df[['umap_x', 'umap_y']].values
+                clicked_2d = numpy.array([clicked_x, clicked_y])
+
+                # Compute 2D Euclidean distances to all real points
+                distances_2d = numpy.linalg.norm(umap_coords - clicked_2d, axis=1)
+                nearest_indices = numpy.argsort(distances_2d)[:k]
+                neighbor_indices = nearest_indices.tolist()
+            else:
+                # Real point: get activation from dataset
+                selected_act = self.activations[selected_idx:selected_idx+1]
+                if self.umap_scaler is not None:
+                    selected_act = self.umap_scaler.transform(selected_act)
+
+                # Find neighbors in high-D space (k+1 to exclude the point itself)
+                distances, indices = self.nn_model.kneighbors(selected_act, n_neighbors=k+1)
+
+                # Remove the point itself (first result)
+                neighbor_indices = indices[0][1:].tolist()
 
             # Merge with manual neighbors (manual neighbors take priority)
             if manual_neighbors:
@@ -850,11 +1028,19 @@ class DMD2Visualizer:
 
                 # Calculate distance if selected point exists and is valid
                 dist_text = ""
-                if selected_idx is not None and selected_idx <= max_idx:
-                    selected_coords = self.df.iloc[selected_idx][['umap_x', 'umap_y']].values
-                    neighbor_coords = self.df.iloc[idx][['umap_x', 'umap_y']].values
-                    dist = np.linalg.norm(selected_coords - neighbor_coords)
-                    dist_text = f"(dist: {dist:.2f})"
+                if selected_idx is not None:
+                    # Handle virtual points (dict) vs real points (int)
+                    if isinstance(selected_idx, dict) and selected_idx.get('type') == 'virtual':
+                        selected_coords = numpy.array([selected_idx['x'], selected_idx['y']])
+                    elif isinstance(selected_idx, int) and selected_idx <= max_idx:
+                        selected_coords = self.df.iloc[selected_idx][['umap_x', 'umap_y']].values
+                    else:
+                        selected_coords = None
+
+                    if selected_coords is not None:
+                        neighbor_coords = self.df.iloc[idx][['umap_x', 'umap_y']].values
+                        dist = numpy.linalg.norm(selected_coords - neighbor_coords)
+                        dist_text = f"(dist: {dist:.2f})"
 
                 # Build neighbor card
                 neighbor_card = dbc.Card([
@@ -901,43 +1087,74 @@ class DMD2Visualizer:
 
             fig = go.Figure(current_figure)
 
-            # Remove any existing highlight traces but keep main scatter + generated overlay + trajectories
-            # Trace 0 = main scatter, keep 'Generated', 'Trajectory', 'Intended' traces
+            # Remove any existing highlight traces but keep main scatter + generated overlay + trajectories + grid
+            # Grid is at index 0, main scatter at index 1
+            # Keep 'Generated', 'Trajectory', 'Intended', '_grid', 'Clicked', 'Inverted' traces
             # Remove highlight traces (Selected, KNN Neighbors, Manual Neighbors)
             base_traces = []
             for i, trace in enumerate(fig.data):
                 trace_name = trace.name or ''
-                # Keep main scatter, generated overlay, and trajectory traces
-                if i == 0 or trace_name == 'Generated' or 'Trajectory' in trace_name or trace_name == 'Intended':
+                # Keep grid (i=0), main scatter (i=1), generated overlay, trajectory traces, virtual point markers
+                if (i <= 1 or trace_name == 'Generated' or 'Trajectory' in trace_name or
+                    trace_name in ('Intended', '_grid', 'Clicked', 'Inverted')):
                     base_traces.append(trace)
             fig.data = base_traces
 
-            # If no point selected or index out of bounds, just return with base traces
-            if selected_idx is None or selected_idx >= len(self.df):
+            # Check if selected point is virtual
+            is_virtual = isinstance(selected_idx, dict) and selected_idx.get('type') == 'virtual'
+
+            # If no point selected, just return with base traces
+            if selected_idx is None:
                 return fig
 
-            # Highlight selected point (green if generated, blue if original)
-            selected_coords = self.df.iloc[[selected_idx]][['umap_x', 'umap_y']]
-            is_generated_col = self.df.get('is_generated', pd.Series([False] * len(self.df)))
-            is_selected_generated = is_generated_col.iloc[selected_idx] if selected_idx < len(is_generated_col) else False
+            # For real points, check bounds
+            if not is_virtual and selected_idx >= len(self.df):
+                return fig
 
-            selection_color = '#00FF00' if is_selected_generated else 'blue'
-            selection_name = 'Selected (Generated)' if is_selected_generated else 'Selected Point'
+            if is_virtual:
+                # Virtual point: highlight at clicked coords with dashed circle
+                selected_x = selected_idx['x']
+                selected_y = selected_idx['y']
+                selection_color = '#0066FF'  # Blue for virtual
+                selection_name = 'Selected (Virtual)'
 
-            fig.add_trace(go.Scatter(
-                x=selected_coords['umap_x'],
-                y=selected_coords['umap_y'],
-                mode='markers',
-                marker=dict(
-                    size=12,
-                    color=selection_color,
-                    symbol='circle-open',
-                    line=dict(width=3, color=selection_color)
-                ),
-                name=selection_name,
-                hoverinfo='skip',
-                showlegend=True
-            ))
+                fig.add_trace(go.Scatter(
+                    x=[selected_x],
+                    y=[selected_y],
+                    mode='markers',
+                    marker=dict(
+                        size=18,
+                        color=selection_color,
+                        symbol='x',
+                        line=dict(width=3, color='white')
+                    ),
+                    name=selection_name,
+                    hoverinfo='skip',
+                    showlegend=True
+                ))
+            else:
+                # Real point: highlight (green if generated, blue if original)
+                selected_coords = self.df.iloc[[selected_idx]][['umap_x', 'umap_y']]
+                is_generated_col = self.df.get('is_generated', pd.Series([False] * len(self.df)))
+                is_selected_generated = is_generated_col.iloc[selected_idx] if selected_idx < len(is_generated_col) else False
+
+                selection_color = '#00FF00' if is_selected_generated else 'blue'
+                selection_name = 'Selected (Generated)' if is_selected_generated else 'Selected Point'
+
+                fig.add_trace(go.Scatter(
+                    x=selected_coords['umap_x'],
+                    y=selected_coords['umap_y'],
+                    mode='markers',
+                    marker=dict(
+                        size=12,
+                        color=selection_color,
+                        symbol='circle-open',
+                        line=dict(width=3, color=selection_color)
+                    ),
+                    name=selection_name,
+                    hoverinfo='skip',
+                    showlegend=True
+                ))
 
             # Add KNN neighbors in red with thin line if any
             if neighbor_indices:
@@ -1007,44 +1224,90 @@ class DMD2Visualizer:
             prevent_initial_call=True
         )
         def generate_from_neighbors(n_clicks, manual_neighbors, knn_neighbors, selected_idx, current_figure):
-            """Generate new image from neighbor center activation."""
+            """Generate new image from neighbor center activation or virtual point."""
             try:
                 # Validate inputs
                 if selected_idx is None:
                     return "Error: No point selected", dash.no_update, dash.no_update
 
-                # Combine all neighbors
-                all_neighbors = []
-                if manual_neighbors:
-                    all_neighbors.extend(manual_neighbors)
-                if knn_neighbors:
-                    all_neighbors.extend([n for n in knn_neighbors if n not in all_neighbors])
+                # Check if this is a virtual point (empty space click)
+                is_virtual = isinstance(selected_idx, dict) and selected_idx.get('type') == 'virtual'
 
-                if not all_neighbors:
-                    return "Error: No neighbors selected", dash.no_update, dash.no_update
+                # Track the originally clicked position for trajectory visualization
+                clicked_2d = None  # Only set for virtual points
 
-                if self.activations is None:
-                    return "Error: Activations not loaded", dash.no_update, dash.no_update
+                if is_virtual:
+                    # VIRTUAL POINT: Use centroid of 2D-nearest neighbors in high-D space
+                    # (inverse_transform doesn't preserve correlation structure)
+                    clicked_x = selected_idx['x']
+                    clicked_y = selected_idx['y']
+                    clicked_2d = numpy.array([[clicked_x, clicked_y]])
+                    print(f"[VIRTUAL] Clicked position: ({clicked_x:.3f}, {clicked_y:.3f})")
 
-                # NEW: Average neighbors directly in high-D activation space (no inverse_transform!)
-                print(f"[GEN] Neighbors: {all_neighbors}")
-                neighbor_activations = self.activations[all_neighbors]
-                center_activation = np.mean(neighbor_activations, axis=0, keepdims=True)
-                print(f"[GEN] Averaged {len(all_neighbors)} neighbor activations in high-D space")
-                print(f"[GEN] Center activation shape: {center_activation.shape}")
+                    # Collect neighbors (from KNN or manual selection)
+                    all_neighbors = []
+                    if manual_neighbors:
+                        all_neighbors.extend(manual_neighbors)
+                    if knn_neighbors:
+                        all_neighbors.extend([n for n in knn_neighbors if n not in all_neighbors])
 
-                # Forward transform to get intended 2D position for visualization
-                center_scaled = center_activation
-                if self.umap_scaler is not None:
-                    center_scaled = self.umap_scaler.transform(center_activation)
-                if self.umap_reducer is not None:
-                    center_2d = self.umap_reducer.transform(center_scaled)
-                    print(f"[GEN] Intended center in UMAP: ({center_2d[0,0]:.3f}, {center_2d[0,1]:.3f})")
+                    if not all_neighbors:
+                        return "Error: Find neighbors first (click 'Find Neighbors' button)", dash.no_update, dash.no_update
+
+                    if self.activations is None:
+                        return "Error: Activations not loaded", dash.no_update, dash.no_update
+
+                    # Average neighbors in high-D activation space (same as real points)
+                    print(f"[VIRTUAL] Using {len(all_neighbors)} neighbors: {all_neighbors[:5]}...")
+                    neighbor_activations = self.activations[all_neighbors]
+                    center_activation = numpy.mean(neighbor_activations, axis=0, keepdims=True)
+                    print(f"[VIRTUAL] Averaged neighbor activations, shape: {center_activation.shape}")
+
+                    # Forward transform to get center 2D position for trajectory visualization
+                    if self.umap_reducer is not None:
+                        center_scaled = center_activation
+                        if self.umap_scaler is not None:
+                            center_scaled = self.umap_scaler.transform(center_activation)
+                        center_2d = self.umap_reducer.transform(center_scaled)
+                        print(f"[VIRTUAL] Neighbor centroid projects to: ({center_2d[0,0]:.3f}, {center_2d[0,1]:.3f})")
+                    else:
+                        # No reducer - use clicked position as center
+                        center_2d = clicked_2d
+
                 else:
-                    # Fallback: average UMAP coords of neighbors
-                    neighbor_coords = self.df.iloc[all_neighbors][['umap_x', 'umap_y']].values
-                    center_2d = np.mean(neighbor_coords, axis=0).reshape(1, -1)
-                    print(f"[GEN] Intended center (avg UMAP coords): ({center_2d[0,0]:.3f}, {center_2d[0,1]:.3f})")
+                    # REAL POINT: Average neighbors in high-D space (existing behavior)
+                    # Combine all neighbors
+                    all_neighbors = []
+                    if manual_neighbors:
+                        all_neighbors.extend(manual_neighbors)
+                    if knn_neighbors:
+                        all_neighbors.extend([n for n in knn_neighbors if n not in all_neighbors])
+
+                    if not all_neighbors:
+                        return "Error: No neighbors selected", dash.no_update, dash.no_update
+
+                    if self.activations is None:
+                        return "Error: Activations not loaded", dash.no_update, dash.no_update
+
+                    # Average neighbors directly in high-D activation space
+                    print(f"[GEN] Neighbors: {all_neighbors}")
+                    neighbor_activations = self.activations[all_neighbors]
+                    center_activation = numpy.mean(neighbor_activations, axis=0, keepdims=True)
+                    print(f"[GEN] Averaged {len(all_neighbors)} neighbor activations in high-D space")
+                    print(f"[GEN] Center activation shape: {center_activation.shape}")
+
+                    # Forward transform to get intended 2D position for visualization
+                    center_scaled = center_activation
+                    if self.umap_scaler is not None:
+                        center_scaled = self.umap_scaler.transform(center_activation)
+                    if self.umap_reducer is not None:
+                        center_2d = self.umap_reducer.transform(center_scaled)
+                        print(f"[GEN] Intended center in UMAP: ({center_2d[0,0]:.3f}, {center_2d[0,1]:.3f})")
+                    else:
+                        # Fallback: average UMAP coords of neighbors
+                        neighbor_coords = self.df.iloc[all_neighbors][['umap_x', 'umap_y']].values
+                        center_2d = numpy.mean(neighbor_coords, axis=0).reshape(1, -1)
+                        print(f"[GEN] Intended center (avg UMAP coords): ({center_2d[0,0]:.3f}, {center_2d[0,1]:.3f})")
 
                 # Load generator if not already loaded
                 if self.generator is None:
@@ -1078,7 +1341,7 @@ class DMD2Visualizer:
                 offset = 0
                 for layer_name in sorted(layers):
                     shape = self.layer_shapes[layer_name]
-                    size = np.prod(shape)
+                    size = numpy.prod(shape)
                     layer_act_flat = center_activation[0, offset:offset+size]
                     offset += size
 
@@ -1105,10 +1368,19 @@ class DMD2Visualizer:
 
                 print("[GEN] Starting image generation...", flush=True)
 
-                # Generate image (use same class as selected point if available)
+                # Generate image - determine class label
                 # All data uses Standard ImageNet ordering - no remapping needed
                 class_label = None
-                if 'class_label' in self.df.columns:
+                if is_virtual:
+                    # Virtual point: use nearest neighbor's class
+                    if all_neighbors and 'class_label' in self.df.columns:
+                        # Use first neighbor's class (closest in high-D space)
+                        class_label = int(self.df.iloc[all_neighbors[0]]['class_label'])
+                        print(f"[VIRTUAL] Using nearest neighbor class: {class_label} ({self.get_class_name(class_label)})")
+                    else:
+                        print("[VIRTUAL] No neighbors - using random class")
+                elif 'class_label' in self.df.columns:
+                    # Real point: use selected point's class
                     class_label = int(self.df.iloc[selected_idx]['class_label'])
                     print(f"Using class_label: {class_label} ({self.get_class_name(class_label)})")
 
@@ -1179,8 +1451,8 @@ class DMD2Visualizer:
 
                             # Diagnostic: Compare distances
                             if prev_act_scaled is not None:
-                                high_d_dist = np.linalg.norm(act_scaled - prev_act_scaled)
-                                umap_dist = np.linalg.norm(coords - prev_coords)
+                                high_d_dist = numpy.linalg.norm(act_scaled - prev_act_scaled)
+                                umap_dist = numpy.linalg.norm(coords - prev_coords)
                                 print(f"[DIAG] Step {step_idx-1}->{step_idx}: high-D={high_d_dist:.2f}, UMAP={umap_dist:.4f}, ratio={umap_dist/high_d_dist:.6f}")
                             prev_act_scaled = act_scaled
                             prev_coords = coords
@@ -1252,16 +1524,37 @@ class DMD2Visualizer:
                 # Store trajectory for visualization
                 if not hasattr(self, 'generated_trajectories'):
                     self.generated_trajectories = []
-                self.generated_trajectories.append({
+
+                trajectory_data = {
                     'sample_id': next_sample_id,
                     'intended_x': float(center_2d[0, 0]),
                     'intended_y': float(center_2d[0, 1]),
-                    'trajectory': trajectory_coords
-                })
+                    'trajectory': trajectory_coords,
+                    'is_virtual': is_virtual
+                }
+
+                # For virtual points, also store the original clicked position
+                if is_virtual and clicked_2d is not None:
+                    trajectory_data['clicked_x'] = float(clicked_2d[0, 0])
+                    trajectory_data['clicked_y'] = float(clicked_2d[0, 1])
+
+                self.generated_trajectories.append(trajectory_data)
                 # Mark existing points as not generated if column doesn't exist
                 if 'is_generated' not in self.df.columns:
                     self.df['is_generated'] = False
                 self.df = pd.concat([self.df, new_row], ignore_index=True)
+
+                # Add generated activation to self.activations for KNN
+                if trajectory_acts is not None and len(trajectory_acts) > 0:
+                    # Use final step activation (already flattened)
+                    final_act = trajectory_acts[-1]
+                else:
+                    # Single-step: flatten generated_activations dict
+                    act_parts = []
+                    for layer_name in sorted(generated_activations.keys()):
+                        act_parts.append(generated_activations[layer_name].flatten())
+                    final_act = numpy.concatenate(act_parts).reshape(1, -1)
+                self.activations = numpy.vstack([self.activations, final_act])
 
                 # Refit nearest neighbors
                 self.fit_nearest_neighbors()
@@ -1297,14 +1590,24 @@ class DMD2Visualizer:
                         intended_x = traj_data['intended_x']
                         intended_y = traj_data['intended_y']
                         trajectory = traj_data.get('trajectory', [])
+                        traj_is_virtual = traj_data.get('is_virtual', False)
 
                         if trajectory:
-                            # Build path: intended point -> step 0 -> step 1 -> ... -> final
-                            path_x = [intended_x] + [t['x'] for t in trajectory]
-                            path_y = [intended_y] + [t['y'] for t in trajectory]
-                            steps = ['intended'] + [f"step {t['step']}" for t in trajectory]
-                            # Image paths: None for intended, then step images
-                            img_paths = [None] + [t.get('image_path') for t in trajectory]
+                            # For virtual points: clicked -> inverted -> step 0 -> ... -> final
+                            # For real points: intended -> step 0 -> ... -> final
+                            if traj_is_virtual and 'clicked_x' in traj_data:
+                                clicked_x = traj_data['clicked_x']
+                                clicked_y = traj_data['clicked_y']
+                                # Full path includes clicked point
+                                path_x = [clicked_x, intended_x] + [t['x'] for t in trajectory]
+                                path_y = [clicked_y, intended_y] + [t['y'] for t in trajectory]
+                                steps = ['clicked', 'inverted'] + [f"step {t['step']}" for t in trajectory]
+                                img_paths = [None, None] + [t.get('image_path') for t in trajectory]
+                            else:
+                                path_x = [intended_x] + [t['x'] for t in trajectory]
+                                path_y = [intended_y] + [t['y'] for t in trajectory]
+                                steps = ['intended'] + [f"step {t['step']}" for t in trajectory]
+                                img_paths = [None] + [t.get('image_path') for t in trajectory]
 
                             # Add trajectory line (dotted)
                             fig.add_trace(go.Scatter(
@@ -1320,21 +1623,54 @@ class DMD2Visualizer:
                                 showlegend=False
                             ))
 
-                            # Add hollow circle at intended point
-                            fig.add_trace(go.Scatter(
-                                x=[intended_x],
-                                y=[intended_y],
-                                mode='markers',
-                                marker=dict(
-                                    size=10,
-                                    color='rgba(255,255,255,0)',
-                                    line=dict(width=2, color='#00CC00')
-                                ),
-                                name='Intended',
-                                customdata=[[sample_id, 'intended', None]],  # Match trajectory format
-                                hovertemplate=f'{sample_id}<br>intended<br>(%{{x:.3f}}, %{{y:.3f}})<extra></extra>',
-                                showlegend=False
-                            ))
+                            # For virtual points: add hollow circle at clicked position
+                            if traj_is_virtual and 'clicked_x' in traj_data:
+                                fig.add_trace(go.Scatter(
+                                    x=[traj_data['clicked_x']],
+                                    y=[traj_data['clicked_y']],
+                                    mode='markers',
+                                    marker=dict(
+                                        size=12,
+                                        color='rgba(255,255,255,0)',
+                                        line=dict(width=3, color='#0066FF')  # Blue for clicked
+                                    ),
+                                    name='Clicked',
+                                    customdata=[[sample_id, 'clicked', None]],
+                                    hovertemplate=f'{sample_id}<br>clicked (user intent)<br>(%{{x:.3f}}, %{{y:.3f}})<extra></extra>',
+                                    showlegend=False
+                                ))
+
+                                # Add orange marker at inverted/reprojected position
+                                fig.add_trace(go.Scatter(
+                                    x=[intended_x],
+                                    y=[intended_y],
+                                    mode='markers',
+                                    marker=dict(
+                                        size=10,
+                                        color='#FF6600',  # Orange for inverted
+                                        line=dict(width=2, color='#000000')
+                                    ),
+                                    name='Inverted',
+                                    customdata=[[sample_id, 'inverted', None]],
+                                    hovertemplate=f'{sample_id}<br>inverted (UMAP projection)<br>(%{{x:.3f}}, %{{y:.3f}})<extra></extra>',
+                                    showlegend=False
+                                ))
+                            else:
+                                # For real points: add hollow circle at intended point (existing behavior)
+                                fig.add_trace(go.Scatter(
+                                    x=[intended_x],
+                                    y=[intended_y],
+                                    mode='markers',
+                                    marker=dict(
+                                        size=10,
+                                        color='rgba(255,255,255,0)',
+                                        line=dict(width=2, color='#00CC00')
+                                    ),
+                                    name='Intended',
+                                    customdata=[[sample_id, 'intended', None]],
+                                    hovertemplate=f'{sample_id}<br>intended<br>(%{{x:.3f}}, %{{y:.3f}})<extra></extra>',
+                                    showlegend=False
+                                ))
 
                 # Add bright overlay for generated points
                 is_generated_col = self.df.get('is_generated', pd.Series([False] * len(self.df)))
@@ -1360,6 +1696,24 @@ class DMD2Visualizer:
                         hovertemplate='<b>GENERATED: %{text}</b><extra></extra>',
                         showlegend=True
                     ))
+
+                # Add invisible grid for empty space click detection (prepend so data is on top)
+                grid_x, grid_y = self._create_invisible_grid(
+                    (self.df['umap_x'].min(), self.df['umap_x'].max()),
+                    (self.df['umap_y'].min(), self.df['umap_y'].max())
+                )
+                grid_trace = go.Scatter(
+                    x=grid_x,
+                    y=grid_y,
+                    mode='markers',
+                    marker=dict(opacity=0.01, size=15),
+                    customdata=[{'type': 'grid', 'x': float(x), 'y': float(y)} for x, y in zip(grid_x, grid_y)],
+                    name='_grid',
+                    hoverinfo='skip',
+                    showlegend=False
+                )
+                # Rebuild figure with grid first (so data points render on top)
+                fig = go.Figure(data=[grid_trace] + list(fig.data), layout=fig.layout)
 
                 fig.update_layout(
                     hovermode='closest',
@@ -1393,8 +1747,13 @@ class DMD2Visualizer:
             if not n_clicks:
                 return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-            # Remove generated samples from dataframe
+            # Remove generated samples from dataframe and activations
             if 'is_generated' in self.df.columns:
+                # Get mask of non-generated samples
+                keep_mask = ~self.df['is_generated'].values
+                # Slice activations to match (generated were appended at end)
+                if self.activations is not None:
+                    self.activations = self.activations[keep_mask]
                 self.df = self.df[~self.df['is_generated']].reset_index(drop=True)
 
             # Clear stored trajectories
@@ -1418,6 +1777,26 @@ class DMD2Visualizer:
                 labels={'umap_x': 'UMAP 1', 'umap_y': 'UMAP 2'}
             )
             fig.update_traces(marker=dict(size=5, opacity=0.7))
+
+            # Add invisible grid for empty space click detection (prepend so data is on top)
+            grid_x, grid_y = self._create_invisible_grid(
+                (self.df['umap_x'].min(), self.df['umap_x'].max()),
+                (self.df['umap_y'].min(), self.df['umap_y'].max())
+            )
+            grid_trace = go.Scatter(
+                x=grid_x,
+                y=grid_y,
+                mode='markers',
+                marker=dict(opacity=0.01, size=20, color='lightgray'),
+                customdata=[{'type': 'grid', 'x': float(x), 'y': float(y)} for x, y in zip(grid_x, grid_y)],
+                name='_grid',
+                hoverinfo='text',
+                hovertext=['grid' for _ in grid_x],
+                showlegend=False
+            )
+            # Rebuild figure with grid first (so data points render on top)
+            fig = go.Figure(data=[grid_trace] + list(fig.data), layout=fig.layout)
+
             fig.update_layout(hovermode='closest', template='plotly_white')
 
             # Reset selection state
