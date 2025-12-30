@@ -18,7 +18,6 @@ import argparse
 import pickle
 import torch
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics import pairwise_distances
 
 # For dynamic UMAP recalculation
 from process_embeddings import compute_umap, load_dataset_activations
@@ -32,7 +31,6 @@ from generate_from_activation import (
     save_generated_sample,
     infer_activation_shape
 )
-from extract_activations import ActivationExtractor
 
 
 class DMD2Visualizer:
@@ -1112,10 +1110,6 @@ class DMD2Visualizer:
                     class_label = int(self.df.iloc[selected_idx]['class_label'])
                     print(f"Using class_label: {class_label} ({self.get_class_name(class_label)})")
 
-                # Create extractor to capture actual activations during generation
-                extractor = ActivationExtractor("imagenet")
-                extractor.register_hooks(self.generator, list(activation_dict.keys()))
-
                 # Use multi-step or single-step generation based on config
                 if self.num_steps > 1:
                     mask_info = f", mask_steps={self.mask_steps or self.num_steps}"
@@ -1148,17 +1142,13 @@ class DMD2Visualizer:
                     trajectory_acts = None  # No trajectory for single-step
                     intermediate_imgs = None  # No intermediates for single-step
 
-                # Get the generated activations
-                generated_activations = extractor.get_activations()
-                extractor.remove_hooks()
+                # Clean up mask hooks
                 mask.remove_hooks()
 
                 print("Image generated successfully")
 
                 # Project trajectory through UMAP and save intermediate images
                 trajectory_coords = []
-                prev_act_scaled = None
-                prev_coords = None
                 if trajectory_acts is not None and len(trajectory_acts) > 0:
                     # Create directory for intermediate images
                     intermediate_dir = self.data_dir / "images" / "intermediates"
@@ -1167,7 +1157,6 @@ class DMD2Visualizer:
                     # Only do UMAP projection if reducer is available
                     if self.umap_reducer is not None:
                         print(f"[GEN] Projecting {len(trajectory_acts)} trajectory points through UMAP...")
-                        print(f"[DIAG] Comparing high-D vs UMAP distances between steps:")
 
                         for step_idx, act in enumerate(trajectory_acts):
                             # Apply scaler if used during UMAP training
@@ -1176,14 +1165,6 @@ class DMD2Visualizer:
                                 act_scaled = self.umap_scaler.transform(act)
                             # Project to 2D
                             coords = self.umap_reducer.transform(act_scaled)
-
-                            # Diagnostic: Compare distances
-                            if prev_act_scaled is not None:
-                                high_d_dist = np.linalg.norm(act_scaled - prev_act_scaled)
-                                umap_dist = np.linalg.norm(coords - prev_coords)
-                                print(f"[DIAG] Step {step_idx-1}->{step_idx}: high-D={high_d_dist:.2f}, UMAP={umap_dist:.4f}, ratio={umap_dist/high_d_dist:.6f}")
-                            prev_act_scaled = act_scaled
-                            prev_coords = coords
 
                             # Save intermediate image if available
                             img_path = None
@@ -1225,7 +1206,7 @@ class DMD2Visualizer:
 
                 sample_record = save_generated_sample(
                     images[0],
-                    generated_activations,
+                    {},  # Activations captured via trajectory, not needed here
                     metadata,
                     self.data_dir,
                     next_sample_id
