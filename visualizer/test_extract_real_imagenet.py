@@ -11,10 +11,30 @@ import shutil
 from PIL import Image
 import json
 
-from extract_real_imagenet import (
-    preprocess_imagenet_image,
-    parse_imagenet_path,
+from data_sources import (
+    load_class_labels_map,
+    create_output_dirs,
+    NPZDataSource,
+    JPEGDataSource,
+    LMDBDataSource,
+    create_data_source,
+    BatchProcessor
 )
+from extract_real_imagenet import extract_real_imagenet_activations
+
+
+def preprocess_jpeg_image(image_path: Path, target_size: int = 64) -> np.ndarray:
+    """Load and preprocess JPEG image to uint8 CHW format."""
+    img = Image.open(image_path).convert('RGB')
+    img = img.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    img_array = np.array(img).astype(np.uint8)
+    return img_array.transpose(2, 0, 1)  # HWC -> CHW
+
+
+def parse_imagenet_path(image_path: Path):
+    """Parse synset from ImageNet path."""
+    synset_id = image_path.parent.name
+    return synset_id, None
 
 
 class TestPreprocessing:
@@ -28,7 +48,15 @@ class TestPreprocessing:
         test_img.save(img_path)
 
         # Preprocess
-        tensor = preprocess_imagenet_image(img_path, target_size=64)
+        img_array = preprocess_jpeg_image(img_path, target_size=64)
+
+        # Check shape (CHW format)
+        assert img_array.shape == (3, 64, 64)
+        assert img_array.dtype == np.uint8
+
+        # Convert to tensor format matching old API
+        tensor = torch.from_numpy(img_array).float().unsqueeze(0)
+        tensor = (tensor / 127.5) - 1.0
 
         # Check shape
         assert tensor.shape == (1, 3, 64, 64)
@@ -49,8 +77,8 @@ class TestPreprocessing:
             test_img = Image.new('RGB', (size, size), color='blue')
             test_img.save(img_path)
 
-            tensor = preprocess_imagenet_image(img_path, target_size=64)
-            assert tensor.shape == (1, 3, 64, 64)
+            img_array = preprocess_jpeg_image(img_path, target_size=64)
+            assert img_array.shape == (3, 64, 64)
 
     def test_parse_imagenet_path_val(self):
         """Test parsing validation set paths."""
@@ -141,7 +169,7 @@ class TestSynetMapping:
     def test_synset_mapping(self):
         """Test that synset mapping works correctly."""
         # Load actual class labels
-        class_labels_path = Path(__file__).parent / "data" / "imagenet_class_labels.json"
+        class_labels_path = Path(__file__).parent / "data" / "imagenet_standard_class_index.json"
 
         if not class_labels_path.exists():
             pytest.skip("Class labels file not found")
@@ -207,22 +235,20 @@ class TestNPZProcessing:
 
     def test_npz_numerical_sorting(self, tmp_path):
         """Test that NPZ files are sorted numerically, not alphabetically."""
-        # Create mock NPZ files
+        # Create mock NPZ files with data and labels
         for i in [1, 2, 3, 10, 11]:
             npz_path = tmp_path / f"train_data_batch_{i}.npz"
-            np.savez(npz_path, data=np.array([1, 2, 3]))
+            np.savez(npz_path, data=np.zeros((10, 12288)), labels=np.ones(10))
 
-        # Sort files
-        npz_files = sorted(
-            list(tmp_path.glob('*.npz')),
-            key=lambda p: int(p.stem.split('_')[-1])
-        )
+        # Create NPZDataSource
+        source = NPZDataSource(tmp_path)
 
-        # Extract batch numbers
-        batch_nums = [int(f.stem.split('_')[-1]) for f in npz_files]
+        # Check files are sorted numerically
+        batch_nums = [int(f.stem.split('_')[-1]) for f in source.npz_files]
 
         # Should be [1, 2, 3, 10, 11], NOT [1, 10, 11, 2, 3]
         assert batch_nums == [1, 2, 3, 10, 11]
+        source.close()
 
     def test_npz_alphabetical_sorting_is_wrong(self, tmp_path):
         """Test that alphabetical sorting produces wrong order."""
@@ -303,15 +329,84 @@ class TestClassBalancedSampling:
         assert len(selected_indices) == 10
 
 
+class TestDataSources:
+    """Test data source abstractions."""
+
+    def test_load_class_labels_map(self):
+        """Test loading class labels."""
+        labels_map = load_class_labels_map()
+        assert len(labels_map) == 1000
+        assert "0" in labels_map
+        assert labels_map["0"][0] == "n01440764"  # tench synset
+
+    def test_create_output_dirs(self, tmp_path):
+        """Test output directory creation."""
+        dirs = create_output_dirs(tmp_path)
+        assert dirs['root'] == tmp_path
+        assert dirs['image'].exists()
+        assert dirs['reconstructed'].exists()
+        assert dirs['activation'].exists()
+        assert dirs['metadata'].exists()
+
+    def test_jpeg_data_source(self, tmp_path):
+        """Test JPEGDataSource initialization."""
+        # Create mock structure
+        val_dir = tmp_path / "val" / "n01440764"
+        val_dir.mkdir(parents=True)
+        for i in range(3):
+            img = Image.new('RGB', (64, 64), color='red')
+            img.save(val_dir / f"img_{i}.JPEG")
+
+        labels_map = load_class_labels_map()
+        source = JPEGDataSource(tmp_path, "val", labels_map)
+
+        assert source.total_samples == 3
+        source.close()
+
+    def test_npz_data_source(self, tmp_path):
+        """Test NPZDataSource initialization."""
+        # Create mock NPZ files
+        for i in range(2):
+            np.savez(
+                tmp_path / f"batch_{i}.npz",
+                data=np.zeros((5, 12288), dtype=np.uint8),
+                labels=np.ones(5, dtype=np.int64)
+            )
+
+        source = NPZDataSource(tmp_path)
+        assert source.total_samples == 10
+        source.close()
+
+    def test_create_data_source_factory(self, tmp_path):
+        """Test data source factory."""
+        # Create mock NPZ dir
+        npz_dir = tmp_path / "npz"
+        npz_dir.mkdir()
+        np.savez(
+            npz_dir / "batch_1.npz",
+            data=np.zeros((5, 12288), dtype=np.uint8),
+            labels=np.ones(5, dtype=np.int64)
+        )
+
+        source = create_data_source(npz_dir=npz_dir)
+        assert isinstance(source, NPZDataSource)
+        source.close()
+
+
 def test_imports():
     """Test that all imports work."""
-    from extract_real_imagenet import (
-        get_imagenet_config,
-        load_imagenet_model,
-        preprocess_imagenet_image,
-        parse_imagenet_path,
-        extract_real_imagenet_activations
+    from extract_real_imagenet import extract_real_imagenet_activations
+    from data_sources import (
+        ImageNetDataSource,
+        LMDBDataSource,
+        NPZDataSource,
+        JPEGDataSource,
+        BatchProcessor,
+        create_data_source,
+        load_class_labels_map,
+        create_output_dirs
     )
+    from model_utils import create_imagenet_generator, load_checkpoint
     assert True
 
 
