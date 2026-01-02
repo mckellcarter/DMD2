@@ -100,6 +100,9 @@ class DMD2Visualizer:
         if not label_path.exists():
             # Fallback to legacy paths
             label_path = self.data_dir / "imagenet_class_labels.json"
+        if not label_path.exists():
+            # Fallback to visualizer/data directory
+            label_path = Path(__file__).parent / "data" / "imagenet_standard_class_index.json"
 
         if label_path.exists():
             with open(label_path, 'r') as f:
@@ -282,6 +285,32 @@ class DMD2Visualizer:
                             html.Div(id="hover-image"),
                             html.Div(id="hover-details", className="mt-2")
                         ])
+                    ], className="mb-3"),
+
+                    # Class filter card
+                    dbc.Card([
+                        dbc.CardHeader("Find Class"),
+                        dbc.CardBody([
+                            dcc.Dropdown(
+                                id="class-filter-dropdown",
+                                options=[],  # Populated dynamically
+                                placeholder="Select a class...",
+                                searchable=True,
+                                clearable=True,
+                                className="mb-2",
+                                style={"maxHeight": "300px"}
+                            ),
+                            dbc.Button(
+                                "Clear Highlight",
+                                id="clear-class-highlight-btn",
+                                color="secondary",
+                                size="sm",
+                                outline=True,
+                                className="w-100",
+                                disabled=True
+                            ),
+                            html.Div(id="class-filter-status", className="text-muted small mt-2")
+                        ])
                     ])
                 ], width=3),
 
@@ -381,23 +410,21 @@ class DMD2Visualizer:
             # Hidden stores for state
             dcc.Store(id="selected-point-store", data=None),
             dcc.Store(id="neighbor-indices-store", data=None),
-            dcc.Store(id="manual-neighbors-store", data=[])
+            dcc.Store(id="manual-neighbors-store", data=[]),
+            dcc.Store(id="highlighted-class-store", data=None)
         ], fluid=True, className="p-4")
 
     def fit_nearest_neighbors(self):
-        """Fit KNN model on high-D activations (not UMAP coords)."""
-        if self.activations is None or len(self.activations) == 0:
-            print("[KNN] No activations loaded, skipping KNN fit")
+        """Fit KNN model on UMAP coordinates (2D) for intuitive neighbor selection."""
+        if self.df.empty or 'umap_x' not in self.df.columns:
+            print("[KNN] No UMAP coordinates loaded, skipping KNN fit")
             return
 
-        # Use scaled activations if scaler exists (same as UMAP training)
-        activations = self.activations
-        if self.umap_scaler is not None:
-            activations = self.umap_scaler.transform(activations)
-
-        print(f"[KNN] Fitting on high-D activations: {activations.shape}")
+        # Fit on 2D UMAP coordinates for intuitive visual neighbor selection
+        umap_coords = self.df[['umap_x', 'umap_y']].values
+        print(f"[KNN] Fitting on UMAP coordinates: {umap_coords.shape}")
         self.nn_model = NearestNeighbors(n_neighbors=21, metric='euclidean')
-        self.nn_model.fit(activations)
+        self.nn_model.fit(umap_coords)
 
     def register_callbacks(self):
         """Register Dash callbacks."""
@@ -522,7 +549,7 @@ class DMD2Visualizer:
                             is_hovered = (traj_step == step)
 
                             if traj_img_path:
-                                img_b64 = self.get_image_base64(traj_img_path, size=(80, 80))
+                                img_b64 = self.get_image_base64(traj_img_path, size=(150, 150))
                                 border_style = "3px solid red" if is_hovered else "1px solid #ccc"
                                 opacity = "1" if is_hovered else "0.7"
                                 grid_items.append(html.Div([
@@ -532,7 +559,7 @@ class DMD2Visualizer:
                                     ) if img_b64 else html.Div("?", style={"width": "60px", "height": "60px"}),
                                     html.Div(f"Step {traj_point['step']}", className="text-center small",
                                              style={"fontWeight": "bold" if is_hovered else "normal"})
-                                ], style={"display": "inline-block", "margin": "2px", "textAlign": "center"}))
+                                ], style={"width": "calc(50% - 4px)", "margin": "2px", "textAlign": "center"}))
 
                         img_element = html.Div(grid_items, style={
                             "display": "flex", "flexWrap": "wrap", "justifyContent": "center"
@@ -588,6 +615,12 @@ class DMD2Visualizer:
                 html.Strong("Coords: "),
                 html.Span(f"({sample['umap_x']:.2f}, {sample['umap_y']:.2f})", className="small")
             ]))
+
+            if 'conditioning_sigma' in sample and pd.notna(sample['conditioning_sigma']):
+                details.append(html.Div([
+                    html.Strong("Sigma: "),
+                    html.Span(f"{sample['conditioning_sigma']}", className="small")
+                ]))
 
             return img_element, html.Div(details)
 
@@ -667,6 +700,8 @@ class DMD2Visualizer:
                 if class_name is not None:
                     class_id = int(sample['class_label'])
                     details.append(html.P([html.Strong("Class: "), f"{class_id}: {class_name}"]))
+                if 'conditioning_sigma' in sample and pd.notna(sample['conditioning_sigma']):
+                    details.append(html.P([html.Strong("Sigma: "), f"{sample['conditioning_sigma']}"]))
                 details.append(html.P([
                     html.Strong("UMAP Coords: "),
                     f"({sample['umap_x']:.2f}, {sample['umap_y']:.2f})"
@@ -748,6 +783,8 @@ class DMD2Visualizer:
             if class_name is not None:
                 class_id = int(sample['class_label'])
                 details.append(html.P([html.Strong("Class: "), f"{class_id}: {class_name}"]))
+            if 'conditioning_sigma' in sample and pd.notna(sample['conditioning_sigma']):
+                details.append(html.P([html.Strong("Sigma: "), f"{sample['conditioning_sigma']}"]))
             details.append(html.P([
                 html.Strong("UMAP Coords: "),
                 f"({sample['umap_x']:.2f}, {sample['umap_y']:.2f})"
@@ -777,17 +814,15 @@ class DMD2Visualizer:
             prevent_initial_call=True
         )
         def find_neighbors(n_clicks, selected_idx, k, manual_neighbors):
-            """Find k nearest neighbors in high-D activation space."""
-            if selected_idx is None or self.nn_model is None or self.activations is None:
+            """Find k nearest neighbors in UMAP space (visually intuitive selection)."""
+            if selected_idx is None or self.nn_model is None or self.df.empty:
                 return None
 
-            # Get high-D activation of selected point (scaled if scaler exists)
-            selected_act = self.activations[selected_idx:selected_idx+1]
-            if self.umap_scaler is not None:
-                selected_act = self.umap_scaler.transform(selected_act)
+            # Get UMAP coordinates of selected point
+            selected_umap = self.df.iloc[selected_idx:selected_idx+1][['umap_x', 'umap_y']].values
 
-            # Find neighbors in high-D space (k+1 to exclude the point itself)
-            distances, indices = self.nn_model.kneighbors(selected_act, n_neighbors=k+1)
+            # Find neighbors in UMAP 2D space (k+1 to exclude the point itself)
+            distances, indices = self.nn_model.kneighbors(selected_umap, n_neighbors=k+1)
 
             # Remove the point itself (first result)
             neighbor_indices = indices[0][1:].tolist()
@@ -874,6 +909,11 @@ class DMD2Visualizer:
                                         f"{int(neighbor_sample['class_label'])}: {self.get_sample_class_name(neighbor_sample)}",
                                         className="small"
                                     ) if self.get_sample_class_name(neighbor_sample) is not None else None,
+                                    html.Br() if 'conditioning_sigma' in neighbor_sample and pd.notna(neighbor_sample['conditioning_sigma']) else None,
+                                    html.Span(
+                                        f"σ={neighbor_sample['conditioning_sigma']}",
+                                        className="small text-muted"
+                                    ) if 'conditioning_sigma' in neighbor_sample and pd.notna(neighbor_sample['conditioning_sigma']) else None,
                                 ])
                             ], width=8)
                         ])
@@ -889,11 +929,12 @@ class DMD2Visualizer:
             Input("selected-point-store", "data"),
             Input("manual-neighbors-store", "data"),
             Input("neighbor-indices-store", "data"),
+            Input("highlighted-class-store", "data"),
             State("umap-scatter", "figure"),
             prevent_initial_call=True
         )
-        def highlight_neighbors(selected_idx, manual_neighbors, neighbor_indices, current_figure):
-            """Highlight selected point and neighbors on plot."""
+        def highlight_neighbors(selected_idx, manual_neighbors, neighbor_indices, highlighted_class, current_figure):
+            """Highlight selected point, neighbors, and class filter on plot."""
             if current_figure is None:
                 return current_figure
 
@@ -901,7 +942,7 @@ class DMD2Visualizer:
 
             # Remove any existing highlight traces but keep main scatter + generated overlay + trajectories
             # Trace 0 = main scatter, keep 'Generated', 'Trajectory', 'Intended' traces
-            # Remove highlight traces (Selected, KNN Neighbors, Manual Neighbors)
+            # Remove highlight traces (Selected, KNN Neighbors, Manual Neighbors, Class Highlight)
             base_traces = []
             for i, trace in enumerate(fig.data):
                 trace_name = trace.name or ''
@@ -910,7 +951,29 @@ class DMD2Visualizer:
                     base_traces.append(trace)
             fig.data = base_traces
 
-            # If no point selected or index out of bounds, just return with base traces
+            # Add class highlight X markers if a class is selected
+            if highlighted_class is not None and 'class_label' in self.df.columns:
+                class_mask = self.df['class_label'] == highlighted_class
+                class_coords = self.df[class_mask][['umap_x', 'umap_y']]
+
+                if len(class_coords) > 0:
+                    class_name = self.get_class_name(highlighted_class)
+                    fig.add_trace(go.Scatter(
+                        x=class_coords['umap_x'],
+                        y=class_coords['umap_y'],
+                        mode='markers',
+                        marker=dict(
+                            size=12,
+                            color='black',
+                            symbol='x',
+                            line=dict(width=2, color='black')
+                        ),
+                        name=f'Class {highlighted_class}: {class_name}',
+                        hoverinfo='skip',
+                        showlegend=True
+                    ))
+
+            # If no point selected or index out of bounds, return with class highlights only
             if selected_idx is None or selected_idx >= len(self.df):
                 return fig
 
@@ -992,6 +1055,65 @@ class DMD2Visualizer:
                 "dmd2_embeddings_export.csv",
                 index=False
             )
+
+        @self.app.callback(
+            Output("class-filter-dropdown", "options"),
+            Input("status-text", "children"),  # Triggered when plot updates
+            prevent_initial_call=False
+        )
+        def populate_class_dropdown(status):
+            """Populate class filter dropdown with available classes."""
+            if self.df.empty or 'class_label' not in self.df.columns:
+                return []
+
+            # Get unique classes and sort by class ID
+            unique_classes = self.df['class_label'].dropna().unique()
+            unique_classes = sorted([int(c) for c in unique_classes])
+
+            # Build options with class name
+            options = []
+            for class_id in unique_classes:
+                class_name = self.get_class_name(class_id)
+                options.append({
+                    "label": f"{class_id}: {class_name}",
+                    "value": class_id
+                })
+
+            return options
+
+        @self.app.callback(
+            Output("highlighted-class-store", "data"),
+            Output("clear-class-highlight-btn", "disabled"),
+            Output("class-filter-status", "children"),
+            Output("class-filter-dropdown", "value"),
+            Input("class-filter-dropdown", "value"),
+            Input("clear-class-highlight-btn", "n_clicks"),
+            prevent_initial_call=True
+        )
+        def handle_class_filter(selected_class, clear_clicks):
+            """Handle class selection and clear button."""
+            ctx = callback_context
+            if not ctx.triggered:
+                return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+            trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+            # Handle clear button
+            if trigger_id == "clear-class-highlight-btn":
+                return None, True, "", None
+
+            # Handle class selection
+            if selected_class is not None:
+                # Count samples in this class
+                if 'class_label' in self.df.columns:
+                    count = (self.df['class_label'] == selected_class).sum()
+                    status = f"{count} samples"
+                else:
+                    status = ""
+                return selected_class, False, status, dash.no_update
+
+            # Dropdown cleared
+            return None, True, "", dash.no_update
 
         @self.app.callback(
             Output("generation-status", "children"),
