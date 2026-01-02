@@ -18,8 +18,7 @@ from data_sources import (
     JPEGDataSource,
     LMDBDataSource,
     create_data_source,
-    BatchProcessor,
-    combine_datasets
+    BatchProcessor
 )
 from extract_real_imagenet import extract_real_imagenet_activations
 
@@ -394,111 +393,6 @@ class TestDataSources:
         source.close()
 
 
-class TestCombineDatasets:
-    """Test dataset combination functionality."""
-
-    def _create_mock_dataset(self, path: Path, num_batches: int, samples_per_batch: int):
-        """Create a mock extracted dataset structure."""
-        # Create directories
-        dirs = create_output_dirs(path)
-
-        # Create mock batch files
-        samples = []
-        sample_idx = 0
-
-        for batch_idx in range(num_batches):
-            batch_id = f"batch_{batch_idx:06d}"
-
-            # Create activation NPZ
-            act_data = {"encoder_bottleneck": np.random.randn(samples_per_batch, 1024)}
-            np.savez(dirs['activation'] / f"{batch_id}.npz", **act_data)
-
-            # Create batch metadata JSON
-            batch_meta = {"batch_size": samples_per_batch, "layers": ["encoder_bottleneck"]}
-            with open(dirs['activation'] / f"{batch_id}.json", 'w') as f:
-                json.dump(batch_meta, f)
-
-            # Create sample images and metadata
-            for i in range(samples_per_batch):
-                sample_id = f"sample_{sample_idx:06d}"
-
-                # Create mock images
-                img = Image.new('RGB', (64, 64), color='red')
-                img.save(dirs['image'] / f"{sample_id}.png")
-                img.save(dirs['reconstructed'] / f"{sample_id}.png")
-
-                samples.append({
-                    "sample_id": sample_id,
-                    "class_label": sample_idx % 10,
-                    "synset_id": "n01440764",
-                    "class_name": "tench",
-                    "image_path": f"images/imagenet_real/{sample_id}.png",
-                    "reconstructed_path": f"images/imagenet_real_reconstructed/{sample_id}.png",
-                    "activation_path": f"activations/imagenet_real/{batch_id}",
-                    "batch_index": i,
-                    "source": "test_source"
-                })
-                sample_idx += 1
-
-        # Create dataset_info.json
-        dataset_info = {
-            "model_type": "imagenet_real",
-            "num_samples": len(samples),
-            "layers": ["encoder_bottleneck"],
-            "samples": samples
-        }
-        with open(dirs['metadata'] / "dataset_info.json", 'w') as f:
-            json.dump(dataset_info, f)
-
-        return path
-
-    def test_combine_two_datasets(self, tmp_path):
-        """Test combining two datasets."""
-        # Create two mock datasets
-        ds1 = self._create_mock_dataset(tmp_path / "dataset1", num_batches=2, samples_per_batch=3)
-        ds2 = self._create_mock_dataset(tmp_path / "dataset2", num_batches=2, samples_per_batch=3)
-
-        # Combine
-        output_dir = tmp_path / "combined"
-        metadata_path = combine_datasets([ds1, ds2], output_dir)
-
-        # Verify output
-        assert metadata_path.exists()
-
-        with open(metadata_path, 'r') as f:
-            combined = json.load(f)
-
-        # Should have 12 samples (2 datasets × 2 batches × 3 samples)
-        assert combined['num_samples'] == 12
-        assert combined['num_batches'] == 4
-        assert len(combined['samples']) == 12
-
-        # Verify sample IDs are sequential
-        sample_ids = [s['sample_id'] for s in combined['samples']]
-        expected = [f"sample_{i:06d}" for i in range(12)]
-        assert sample_ids == expected
-
-        # Verify activation files exist
-        activation_dir = output_dir / "activations" / "imagenet_real"
-        assert (activation_dir / "batch_000000.npz").exists()
-        assert (activation_dir / "batch_000003.npz").exists()
-
-    def test_combine_skip_images(self, tmp_path):
-        """Test combining datasets without copying images."""
-        ds1 = self._create_mock_dataset(tmp_path / "dataset1", num_batches=1, samples_per_batch=2)
-
-        output_dir = tmp_path / "combined"
-        combine_datasets([ds1], output_dir, copy_images=False)
-
-        # Images should not exist in output
-        image_dir = output_dir / "images" / "imagenet_real"
-        assert len(list(image_dir.glob("*.png"))) == 0
-
-        # But activations should
-        activation_dir = output_dir / "activations" / "imagenet_real"
-        assert len(list(activation_dir.glob("*.npz"))) == 1
-
-
 def test_imports():
     """Test that all imports work."""
     from extract_real_imagenet import extract_real_imagenet_activations
@@ -510,8 +404,7 @@ def test_imports():
         BatchProcessor,
         create_data_source,
         load_class_labels_map,
-        create_output_dirs,
-        combine_datasets
+        create_output_dirs
     )
     from model_utils import create_imagenet_generator, load_checkpoint
     assert True
