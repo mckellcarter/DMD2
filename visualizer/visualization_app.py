@@ -131,6 +131,89 @@ class DMD2Visualizer:
             class_name = self.get_class_name(class_id)
         return class_name
 
+    def add_class_highlight_trace(self, fig, highlighted_class):
+        """Add class highlight X markers colored by log(sigma)."""
+        if highlighted_class is None or 'class_label' not in self.df.columns:
+            return
+
+        class_mask = self.df['class_label'] == highlighted_class
+        class_df = self.df[class_mask]
+
+        if len(class_df) == 0:
+            return
+
+        class_name = self.get_class_name(highlighted_class)
+
+        # Color by log(sigma): black at max, medium grey at min
+        # Filter to only samples with valid sigma values
+        if 'conditioning_sigma' in class_df.columns:
+            sigma_mask = class_df['conditioning_sigma'].notna()
+            class_df_with_sigma = class_df[sigma_mask]
+
+            if len(class_df_with_sigma) > 0:
+                sigmas = class_df_with_sigma['conditioning_sigma'].values
+                log_sigmas = np.log(sigmas + 1e-6)  # Avoid log(0)
+                # Normalize to 0-1 range (0=min sigma, 1=max sigma)
+                log_min, log_max = log_sigmas.min(), log_sigmas.max()
+                if log_max > log_min:
+                    normalized = (log_sigmas - log_min) / (log_max - log_min)
+                else:
+                    normalized = np.ones_like(log_sigmas) * 0.5
+                # Map: 1 (max sigma) -> black (0), 0 (min sigma) -> medium grey (128)
+                grey_values = ((1 - normalized) * 128).astype(int)
+                colors = [f'rgb({g},{g},{g})' for g in grey_values]
+
+                # Add trace for samples with sigma (colored)
+                fig.add_trace(go.Scatter(
+                    x=class_df_with_sigma['umap_x'],
+                    y=class_df_with_sigma['umap_y'],
+                    mode='markers',
+                    marker=dict(
+                        size=12,
+                        color=colors,
+                        symbol='x',
+                        line=dict(width=2, color=colors)
+                    ),
+                    name=f'Class {highlighted_class}: {class_name}',
+                    hoverinfo='skip',
+                    showlegend=True
+                ))
+
+                # Add separate trace for samples without sigma (generated) in green
+                class_df_no_sigma = class_df[~sigma_mask]
+                if len(class_df_no_sigma) > 0:
+                    fig.add_trace(go.Scatter(
+                        x=class_df_no_sigma['umap_x'],
+                        y=class_df_no_sigma['umap_y'],
+                        mode='markers',
+                        marker=dict(
+                            size=12,
+                            color='#00FF00',
+                            symbol='x',
+                            line=dict(width=2, color='#00FF00')
+                        ),
+                        name=f'Class {highlighted_class} (generated)',
+                        hoverinfo='skip',
+                        showlegend=False
+                    ))
+                return
+
+        # Fallback: no sigma data, use black
+        fig.add_trace(go.Scatter(
+            x=class_df['umap_x'],
+            y=class_df['umap_y'],
+            mode='markers',
+            marker=dict(
+                size=12,
+                color='black',
+                symbol='x',
+                line=dict(width=2, color='black')
+            ),
+            name=f'Class {highlighted_class}: {class_name}',
+            hoverinfo='skip',
+            showlegend=True
+        ))
+
     def load_data(self):
         """Load embeddings or prepare for generation."""
         if self.embeddings_path and Path(self.embeddings_path).exists():
@@ -545,14 +628,16 @@ class DMD2Visualizer:
                     if full_trajectory:
                         grid_items = []
                         for traj_point in full_trajectory:
-                            traj_step = f"step {traj_point['step']}"
+                            traj_step_num = traj_point['step']
                             traj_img_path = traj_point.get('image_path')
                             traj_sigma = traj_point.get('sigma')
-                            is_hovered = (traj_step == step)
+                            # Compare step numbers (step string may include sigma suffix like "step 0, σ=80.0")
+                            step_prefix = f"step {traj_step_num}"
+                            is_hovered = (step == step_prefix or step.startswith(step_prefix + ","))
 
                             # Format label with sigma if available
                             if traj_sigma is not None:
-                                step_label = f"Step {traj_point['step']}, σ={traj_sigma:.2f}"
+                                step_label = f"Step {traj_point['step']}, σ={traj_sigma:.3f}"
                             else:
                                 step_label = f"Step {traj_point['step']}"
 
@@ -960,26 +1045,7 @@ class DMD2Visualizer:
             fig.data = base_traces
 
             # Add class highlight X markers if a class is selected
-            if highlighted_class is not None and 'class_label' in self.df.columns:
-                class_mask = self.df['class_label'] == highlighted_class
-                class_coords = self.df[class_mask][['umap_x', 'umap_y']]
-
-                if len(class_coords) > 0:
-                    class_name = self.get_class_name(highlighted_class)
-                    fig.add_trace(go.Scatter(
-                        x=class_coords['umap_x'],
-                        y=class_coords['umap_y'],
-                        mode='markers',
-                        marker=dict(
-                            size=12,
-                            color='black',
-                            symbol='x',
-                            line=dict(width=2, color='black')
-                        ),
-                        name=f'Class {highlighted_class}: {class_name}',
-                        hoverinfo='skip',
-                        showlegend=True
-                    ))
+            self.add_class_highlight_trace(fig, highlighted_class)
 
             # If no point selected or index out of bounds, return with class highlights only
             if selected_idx is None or selected_idx >= len(self.df):
@@ -1132,9 +1198,10 @@ class DMD2Visualizer:
             State("neighbor-indices-store", "data"),
             State("selected-point-store", "data"),
             State("umap-scatter", "figure"),
+            State("highlighted-class-store", "data"),
             prevent_initial_call=True
         )
-        def generate_from_neighbors(n_clicks, manual_neighbors, knn_neighbors, selected_idx, current_figure):
+        def generate_from_neighbors(n_clicks, manual_neighbors, knn_neighbors, selected_idx, current_figure, highlighted_class):
             """Generate new image from neighbor center activation."""
             try:
                 # Validate inputs
@@ -1426,7 +1493,7 @@ class DMD2Visualizer:
                             step_labels = []
                             for t in trajectory:
                                 if t.get('sigma') is not None:
-                                    step_labels.append(f"step {t['step']}, σ={t['sigma']:.2f}")
+                                    step_labels.append(f"step {t['step']}, σ={t['sigma']:.3f}")
                                 else:
                                     step_labels.append(f"step {t['step']}")
                             steps = ['intended'] + step_labels
@@ -1487,6 +1554,9 @@ class DMD2Visualizer:
                         hovertemplate='<b>GENERATED: %{text}</b><extra></extra>',
                         showlegend=True
                     ))
+
+                # Add class highlight if active
+                self.add_class_highlight_trace(fig, highlighted_class)
 
                 fig.update_layout(
                     hovermode='closest',
