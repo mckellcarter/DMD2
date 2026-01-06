@@ -29,7 +29,8 @@ from generate_from_activation import (
     generate_with_masked_activation,
     generate_with_masked_activation_multistep,
     save_generated_sample,
-    infer_activation_shape
+    infer_activation_shape,
+    get_denoising_sigmas
 )
 
 
@@ -546,7 +547,14 @@ class DMD2Visualizer:
                         for traj_point in full_trajectory:
                             traj_step = f"step {traj_point['step']}"
                             traj_img_path = traj_point.get('image_path')
+                            traj_sigma = traj_point.get('sigma')
                             is_hovered = (traj_step == step)
+
+                            # Format label with sigma if available
+                            if traj_sigma is not None:
+                                step_label = f"Step {traj_point['step']}, σ={traj_sigma:.2f}"
+                            else:
+                                step_label = f"Step {traj_point['step']}"
 
                             if traj_img_path:
                                 img_b64 = self.get_image_base64(traj_img_path, size=(150, 150))
@@ -557,7 +565,7 @@ class DMD2Visualizer:
                                         src=img_b64,
                                         style={"width": "100%", "border": border_style, "borderRadius": "4px", "opacity": opacity}
                                     ) if img_b64 else html.Div("?", style={"width": "60px", "height": "60px"}),
-                                    html.Div(f"Step {traj_point['step']}", className="text-center small",
+                                    html.Div(step_label, className="text-center small",
                                              style={"fontWeight": "bold" if is_hovered else "normal"})
                                 ], style={"width": "calc(50% - 4px)", "margin": "2px", "textAlign": "center"}))
 
@@ -1276,6 +1284,11 @@ class DMD2Visualizer:
                     intermediate_dir = self.data_dir / "images" / "intermediates"
                     intermediate_dir.mkdir(parents=True, exist_ok=True)
 
+                    # Compute sigma schedule for this trajectory
+                    sigmas = get_denoising_sigmas(
+                        self.num_steps, self.sigma_max, self.sigma_min
+                    ).cpu().numpy()
+
                     # Only do UMAP projection if reducer is available
                     if self.umap_reducer is not None:
                         print(f"[GEN] Projecting {len(trajectory_acts)} trajectory points through UMAP...")
@@ -1296,13 +1309,17 @@ class DMD2Visualizer:
                                 full_path = self.data_dir / img_path
                                 Image.fromarray(intermediate_imgs[step_idx][0].numpy()).save(full_path)
 
+                            # Get sigma for this step
+                            step_sigma = float(sigmas[step_idx]) if step_idx < len(sigmas) else None
+
                             trajectory_coords.append({
                                 'step': step_idx,
+                                'sigma': step_sigma,
                                 'x': float(coords[0, 0]),
                                 'y': float(coords[0, 1]),
                                 'image_path': img_path
                             })
-                        print(f"[GEN] Trajectory: {[(round(t['x'], 3), round(t['y'], 3)) for t in trajectory_coords]}")
+                        print(f"[GEN] Trajectory: {[(t['step'], round(t['sigma'], 3), round(t['x'], 3), round(t['y'], 3)) for t in trajectory_coords]}")
                     else:
                         # No UMAP reducer - just save intermediate images without trajectory
                         print(f"[GEN] Saving {len(trajectory_acts)} intermediate images (no UMAP projection)")
@@ -1405,7 +1422,14 @@ class DMD2Visualizer:
                             # Build path: intended point -> step 0 -> step 1 -> ... -> final
                             path_x = [intended_x] + [t['x'] for t in trajectory]
                             path_y = [intended_y] + [t['y'] for t in trajectory]
-                            steps = ['intended'] + [f"step {t['step']}" for t in trajectory]
+                            # Include sigma in step labels if available
+                            step_labels = []
+                            for t in trajectory:
+                                if t.get('sigma') is not None:
+                                    step_labels.append(f"step {t['step']}, σ={t['sigma']:.2f}")
+                                else:
+                                    step_labels.append(f"step {t['step']}")
+                            steps = ['intended'] + step_labels
                             # Image paths: None for intended, then step images
                             img_paths = [None] + [t.get('image_path') for t in trajectory]
 
