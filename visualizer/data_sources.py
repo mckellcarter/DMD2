@@ -535,7 +535,8 @@ def create_output_dirs(output_dir: Path) -> Dict[str, Path]:
 def combine_datasets(
     dataset_paths: List[Path],
     output_dir: Path,
-    copy_images: bool = True
+    copy_images: bool = True,
+    max_samples_per_dataset: Optional[int] = None
 ) -> Path:
     """
     Combine multiple extracted activation datasets into one.
@@ -548,6 +549,7 @@ def combine_datasets(
             (each should contain metadata/imagenet_real/dataset_info.json)
         output_dir: Output directory for combined dataset
         copy_images: If True, copy image files. If False, only combine activations/metadata.
+        max_samples_per_dataset: If set, take only first N samples from each dataset.
 
     Returns:
         Path to combined dataset_info.json
@@ -574,19 +576,37 @@ def combine_datasets(
         if combined_layers is None:
             combined_layers = dataset_info.get('layers', [])
 
+        # Get samples, optionally limited
+        dataset_samples = dataset_info.get('samples', [])
+        if max_samples_per_dataset is not None:
+            dataset_samples = dataset_samples[:max_samples_per_dataset]
+
         # Track sources
-        for sample in dataset_info.get('samples', []):
+        for sample in dataset_samples:
             combined_sources.add(sample.get('source', 'unknown'))
+
+        # Find which batches we need (only those containing samples we're keeping)
+        needed_batches = set()
+        for sample in dataset_samples:
+            old_act_path = sample.get('activation_path', '')
+            if old_act_path:
+                old_batch_id = Path(old_act_path).stem
+                needed_batches.add(old_batch_id)
 
         # Find activation batches in this dataset
         activation_dir = dataset_path / "activations" / "imagenet_real"
         batch_files = sorted(activation_dir.glob("batch_*.npz"))
 
-        # Map old batch paths to new batch indices
+        # Map old batch paths to new batch indices (only for needed batches)
         old_to_new_batch = {}
 
         for old_batch_file in batch_files:
             old_batch_id = old_batch_file.stem  # e.g., "batch_000005"
+
+            # Skip batches we don't need
+            if old_batch_id not in needed_batches:
+                continue
+
             new_batch_id = f"batch_{batch_idx:06d}"
 
             # Copy activation NPZ
@@ -603,7 +623,7 @@ def combine_datasets(
             batch_idx += 1
 
         # Process samples from this dataset
-        for sample in dataset_info.get('samples', []):
+        for sample in dataset_samples:
             old_sample_id = sample['sample_id']
             new_sample_id = f"sample_{sample_idx:06d}"
 

@@ -4,6 +4,7 @@ Combine multiple extracted activation datasets into one.
 Usage:
     python combine_datasets.py --datasets data/run1 data/run2 --output data/combined
     python combine_datasets.py --datasets data/run1 data/run2 --output data/combined --skip-images
+    python combine_datasets.py --datasets data/run1 data/run2 --output data/combined -n 1000
 """
 
 import argparse
@@ -35,6 +36,12 @@ def main():
         action="store_true",
         help="Skip copying images (only combine activations and metadata)"
     )
+    parser.add_argument(
+        "-n", "--n-samples", "--max_samples_per_dataset",
+        type=int,
+        default=None,
+        help="Take only first N samples from each dataset"
+    )
 
     args = parser.parse_args()
 
@@ -54,7 +61,8 @@ def main():
     combine_datasets(
         dataset_paths=dataset_paths,
         output_dir=output_dir,
-        copy_images=not args.skip_images
+        copy_images=not args.skip_images,
+        max_samples_per_dataset=args.n_samples
     )
 
 

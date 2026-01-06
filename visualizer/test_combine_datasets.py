@@ -159,6 +159,69 @@ class TestCombineDatasets:
         assert combined['num_samples'] == 6
         assert combined['num_batches'] == 2
 
+    def test_combine_with_max_samples(self, tmp_path):
+        """Test limiting samples per dataset with max_samples_per_dataset."""
+        # Create two datasets with 6 samples each (2 batches × 3 samples)
+        ds1 = self._create_mock_dataset(tmp_path / "dataset1", num_batches=2, samples_per_batch=3)
+        ds2 = self._create_mock_dataset(tmp_path / "dataset2", num_batches=2, samples_per_batch=3)
+
+        output_dir = tmp_path / "combined"
+        # Take only first 4 samples from each dataset
+        metadata_path = combine_datasets([ds1, ds2], output_dir, max_samples_per_dataset=4)
+
+        with open(metadata_path, 'r') as f:
+            combined = json.load(f)
+
+        # Should have 8 samples (4 from each dataset)
+        assert combined['num_samples'] == 8
+        assert len(combined['samples']) == 8
+
+        # Verify sample IDs are sequential
+        sample_ids = [s['sample_id'] for s in combined['samples']]
+        expected = [f"sample_{i:06d}" for i in range(8)]
+        assert sample_ids == expected
+
+        # Verify original sample IDs show first 4 from each
+        orig_ids_ds1 = [s['original_sample_id'] for s in combined['samples'][:4]]
+        orig_ids_ds2 = [s['original_sample_id'] for s in combined['samples'][4:]]
+        assert orig_ids_ds1 == [f"sample_{i:06d}" for i in range(4)]
+        assert orig_ids_ds2 == [f"sample_{i:06d}" for i in range(4)]
+
+    def test_combine_max_samples_only_copies_needed_batches(self, tmp_path):
+        """Test that only batches containing kept samples are copied."""
+        # Create dataset with 3 batches × 10 samples = 30 samples
+        ds1 = self._create_mock_dataset(tmp_path / "dataset1", num_batches=3, samples_per_batch=10)
+
+        output_dir = tmp_path / "combined"
+        # Take only first 15 samples (should only need batches 0 and 1)
+        metadata_path = combine_datasets([ds1], output_dir, max_samples_per_dataset=15)
+
+        with open(metadata_path, 'r') as f:
+            combined = json.load(f)
+
+        assert combined['num_samples'] == 15
+        # Should only have 2 batches (batch 2 not needed)
+        assert combined['num_batches'] == 2
+
+        # Verify only 2 batch files exist
+        activation_dir = output_dir / "activations" / "imagenet_real"
+        batch_files = list(activation_dir.glob("batch_*.npz"))
+        assert len(batch_files) == 2
+
+    def test_combine_max_samples_exceeds_dataset_size(self, tmp_path):
+        """Test max_samples larger than dataset just takes all samples."""
+        ds1 = self._create_mock_dataset(tmp_path / "dataset1", num_batches=1, samples_per_batch=5)
+
+        output_dir = tmp_path / "combined"
+        # Request 100 samples but dataset only has 5
+        metadata_path = combine_datasets([ds1], output_dir, max_samples_per_dataset=100)
+
+        with open(metadata_path, 'r') as f:
+            combined = json.load(f)
+
+        # Should just have all 5 samples
+        assert combined['num_samples'] == 5
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
