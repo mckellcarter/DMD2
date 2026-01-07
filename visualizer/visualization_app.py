@@ -49,7 +49,7 @@ class DMD2Visualizer:
             device: Device for generation ('cuda', 'mps', or 'cpu')
             num_steps: Number of denoising steps (1=single-step, 4/10=multi-step)
             mask_steps: Steps to apply activation mask (default=num_steps, 1=first-step-only)
-            guidance_scale: CFG guidance scale (1.0=no guidance)
+            guidance_scale: CFG scale (0=uncond, 1=class, >1=amplify, <0=anti-class)
             sigma_max: Maximum sigma for denoising schedule
             sigma_min: Minimum sigma for denoising schedule
             label_dropout: Label dropout for model config (use 0.1 for CFG models)
@@ -1681,7 +1681,7 @@ def main():
         "--guidance_scale",
         type=float,
         default=1.0,
-        help="CFG guidance scale (1.0=no guidance)"
+        help="CFG scale (0=uncond, 1=class, >1=amplify, <0=anti-class)"
     )
     parser.add_argument(
         "--sigma_max",

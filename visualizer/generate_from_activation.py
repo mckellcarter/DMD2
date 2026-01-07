@@ -155,7 +155,7 @@ def generate_with_masked_activation_multistep(
         sigma_max: Maximum sigma for noise schedule
         sigma_min: Minimum sigma for noise schedule
         rho: Karras schedule parameter
-        guidance_scale: CFG scale (1.0 = no guidance)
+        guidance_scale: CFG scale (0=uncond, 1=class, >1=amplify, <0=anti-class)
         stochastic: Whether to add noise between steps
         num_samples: Number of images to generate
         resolution: Image resolution (64 for ImageNet)
@@ -215,16 +215,30 @@ def generate_with_masked_activation_multistep(
 
         sigma_tensor = torch.ones(num_samples, device=device) * sigma
 
-        if guidance_scale > 1.0:
-            # Classifier-free guidance
+        if guidance_scale != 1.0:
+            # Classifier-free guidance (CFG):
+            #   scale < 0.0: anti-class (drive away from specified class)
+            #   scale = 0.0: pure unconditional
+            #   scale < 1.0: blend toward unconditional (reduced class influence)
+            #   scale > 1.0: amplify class conditioning
+            #
+            # Full spectrum:
+            #   -2.0  strongly anti-class
+            #   -1.0  moderate anti-class
+            #    0.0  pure unconditional
+            #    0.5  weak class influence
+            #    1.0  pure class conditioning (see else branch)
+            #    2.0  amplified class
             pred_cond = generator(x, sigma_tensor, one_hot_labels)
             pred_uncond = generator(x, sigma_tensor, uncond_labels)
             pred = pred_uncond + guidance_scale * (pred_cond - pred_uncond)
         else:
-            # No guidance
+            # scale = 1.0: pure class conditioning, skip extra forward pass
             pred = generator(x, sigma_tensor, one_hot_labels)
 
         # Extract activation for trajectory if enabled
+        # Flow: x (noisy input) -> activations (captured here) -> pred (denoised output)
+        # x at step 0: noise * sigma_max; step i>0: pred[i-1] + sigma[i] * noise
         if extractor is not None:
             acts = extractor.get_activations()
             # Concatenate all layers in sorted order (same as UMAP training)
@@ -244,6 +258,7 @@ def generate_with_masked_activation_multistep(
             extractor.clear_activations()
 
         # Capture intermediate image if requested
+        # Captures pred (denoised output); to capture noisy input use x instead
         if return_intermediates:
             intermediate_images.append(tensor_to_uint8_image(pred))
 

@@ -76,13 +76,25 @@ def sample_multistep_cfg(
     for i, sigma in enumerate(sigmas):
         sigma_tensor = torch.ones(batch_size, device=device) * sigma
 
-        if guidance_scale > 1.0:
-            # Classifier-free guidance: combine conditional and unconditional predictions
+        if guidance_scale != 1.0:
+            # Classifier-free guidance (CFG):
+            #   scale < 0.0: anti-class (drive away from specified class)
+            #   scale = 0.0: pure unconditional
+            #   scale < 1.0: blend toward unconditional (reduced class influence)
+            #   scale > 1.0: amplify class conditioning
+            #
+            # Full spectrum:
+            #   -2.0  strongly anti-class
+            #   -1.0  moderate anti-class
+            #    0.0  pure unconditional
+            #    0.5  weak class influence
+            #    1.0  pure class conditioning (see else branch)
+            #    2.0  amplified class
             pred_cond = generator(x, sigma_tensor, labels)
             pred_uncond = generator(x, sigma_tensor, uncond_labels)
             pred = pred_uncond + guidance_scale * (pred_cond - pred_uncond)
         else:
-            # No guidance - just conditional prediction
+            # scale = 1.0: pure class conditioning, skip extra forward pass
             pred = generator(x, sigma_tensor, labels)
 
         # Transition to next step
