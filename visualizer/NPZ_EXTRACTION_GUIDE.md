@@ -61,7 +61,7 @@ python extract_real_imagenet.py \
 ## Command-Line Arguments
 
 ### Required
-- `--checkpoint_path PATH`: DMD2 model checkpoint
+- `--checkpoint_path PATH`: Model checkpoint
 - **Either** `--npz_dir PATH` (for NPZ) **OR** `--imagenet_dir PATH` (for JPEG)
 
 ### Optional
@@ -72,6 +72,8 @@ python extract_real_imagenet.py \
 - `--conditioning_sigma SIGMA`: Forward pass sigma (default: 80.0, matches DMD2 training)
 - `--seed N`: Random seed for shuffling (default: 10)
 - `--device {cuda,mps,cpu}`: Device (default: auto-detect)
+- `--adapter NAME`: Model adapter (default: `dmd2-imagenet-64`, also: `edm-imagenet-64`)
+- `--label_dropout FLOAT`: Label dropout (default: 0.0, use 0.1 for CFG models)
 
 ### Notes
 - `--split` is **ignored** for NPZ format (NPZ files are train-only)

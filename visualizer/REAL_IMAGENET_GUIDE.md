@@ -127,7 +127,7 @@ data/
 
 ```bash
 python extract_real_imagenet.py \
-  --checkpoint_path PATH      # Required: DMD2 model checkpoint
+  --checkpoint_path PATH      # Required: Model checkpoint
   --npz_dir PATH              # NPZ format: Directory with *.npz files
   --imagenet_dir PATH         # JPEG format: ImageNet root directory
   --output_dir PATH           # Default: "data"
@@ -138,6 +138,8 @@ python extract_real_imagenet.py \
   --split {val,train}         # Default: "train" (JPEG only, ignored for NPZ)
   --seed N                    # Default: 10
   --device {cuda,mps,cpu}     # Default: auto-detect
+  --adapter NAME              # Default: "dmd2-imagenet-64" (also: "edm-imagenet-64")
+  --label_dropout FLOAT       # Default: 0.0 (use 0.1 for CFG models)
 ```
 
 **Important**: Use **either** `--npz_dir` **OR** `--imagenet_dir`, not both.
@@ -178,6 +180,10 @@ python extract_real_imagenet.py \
 - This value matches the `conditioning_sigma` used during DMD2 training (train_edm.py default)
 - **Why 80.0?** DMD2 generator is trained to produce images from `noise * 80.0` at timestep 80.0. Using the same sigma for real images ensures activations are extracted in the same feature space as generated images, enabling proper comparison.
 
+**--adapter**: Model adapter to use
+- `dmd2-imagenet-64` (default): DMD2 distilled ImageNet model
+- `edm-imagenet-64`: Original EDM teacher model (for comparison)
+
 ## Metadata Format
 
 ### Global Metadata (`dataset_info.json`)
@@ -185,6 +191,7 @@ python extract_real_imagenet.py \
 ```json
 {
   "model_type": "imagenet_real",
+  "adapter": "dmd2-imagenet-64",
   "num_samples": 1000,
   "layers": ["encoder_bottleneck", "midblock"],
   "conditioning_sigma": 80.0,
@@ -293,7 +300,28 @@ python process_embeddings.py \
 # python project_to_real_space.py ...
 ```
 
-### 3. Class-Balanced Sampling (NPZ Format)
+### 3. Extract with EDM Teacher Model
+
+Compare DMD2 student vs EDM teacher activations:
+
+```bash
+# DMD2 (default adapter)
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/imagenet_fid1.51.pth \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 5000 \
+  --output_dir data/dmd2_activations
+
+# EDM teacher (original diffusion model)
+python extract_real_imagenet.py \
+  --checkpoint_path ../checkpoints/edm-imagenet-64x64-cond-adm.pkl \
+  --npz_dir data/Imagenet64_train_npz \
+  --num_samples 5000 \
+  --adapter edm-imagenet-64 \
+  --output_dir data/edm_activations
+```
+
+### 4. Class-Balanced Sampling (NPZ Format)
 
 **Built-in class-balanced sampling** enables controlled extraction from specific ImageNet classes:
 

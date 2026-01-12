@@ -337,7 +337,7 @@ class BatchProcessor:
     def __init__(
         self,
         extractor,
-        generator: torch.nn.Module,
+        adapter,
         output_dirs: Dict[str, Path],
         class_labels_map: Dict,
         device: str,
@@ -346,7 +346,7 @@ class BatchProcessor:
         source_name: str = "imagenet_real"
     ):
         self.extractor = extractor
-        self.generator = generator
+        self.adapter = adapter
         self.output_dirs = output_dirs
         self.class_labels_map = class_labels_map
         self.device = device
@@ -395,7 +395,7 @@ class BatchProcessor:
         self.extractor.clear_activations()
         with torch.no_grad():
             sigma = torch.ones(batch_size, device=self.device) * self.conditioning_sigma
-            reconstructed = self.generator(
+            reconstructed = self.adapter.forward(
                 batch_tensor * self.conditioning_sigma,
                 sigma,
                 one_hot_labels

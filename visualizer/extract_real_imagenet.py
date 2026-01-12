@@ -1,5 +1,5 @@
 """
-Extract activations from real ImageNet images using DMD2 model.
+Extract activations from real ImageNet images using adapter interface.
 Supports LMDB, NPZ, and JPEG directory formats.
 """
 
@@ -15,7 +15,7 @@ from accelerate.utils import set_seed
 # Local imports
 from extract_activations import ActivationExtractor
 from device_utils import get_device, get_device_info
-from model_utils import create_imagenet_generator
+from adapters import get_adapter, list_adapters
 from data_sources import (
     create_data_source,
     BatchProcessor,
@@ -50,13 +50,15 @@ def extract_real_imagenet_activations(
     npz_dir: Optional[Path] = None,
     lmdb_path: Optional[Path] = None,
     num_classes: int = 1000,
-    target_classes: Optional[List[int]] = None
+    target_classes: Optional[List[int]] = None,
+    adapter_name: str = "dmd2-imagenet-64",
+    label_dropout: float = 0.0
 ):
     """
     Extract activations from real ImageNet images.
 
     Args:
-        checkpoint_path: Path to DMD2 model checkpoint
+        checkpoint_path: Path to model checkpoint
         imagenet_dir: Root directory of ImageNet dataset (for JPEG format)
         output_dir: Output directory for activations
         num_samples: Total samples to process
@@ -70,6 +72,8 @@ def extract_real_imagenet_activations(
         lmdb_path: Path to LMDB dataset
         num_classes: Number of classes to sample from
         target_classes: Specific class IDs to sample from
+        adapter_name: Adapter to use (dmd2-imagenet-64, edm-imagenet-64)
+        label_dropout: Label dropout rate for adapter
     """
     # Auto-detect device
     if device is None:
@@ -80,13 +84,17 @@ def extract_real_imagenet_activations(
     if device_info['memory_allocated'] != 'N/A':
         print(f"GPU Memory: {device_info['memory_allocated']:.2f} GB allocated")
 
-    # Load model
-    print(f"\nLoading ImageNet model from {checkpoint_path}")
-    generator = create_imagenet_generator(checkpoint_path, device)
+    # Load adapter
+    print(f"\nLoading adapter '{adapter_name}' from {checkpoint_path}")
+    AdapterClass = get_adapter(adapter_name)
+    adapter = AdapterClass.from_checkpoint(
+        checkpoint_path, device=device, label_dropout=label_dropout
+    )
+    print(f"Available layers: {adapter.hookable_layers}")
 
-    # Setup extractor
-    extractor = ActivationExtractor(model_type="imagenet")
-    extractor.register_hooks(generator, layers)
+    # Setup extractor with adapter
+    extractor = ActivationExtractor(adapter)
+    extractor.register_hooks(layers)
 
     # Load class labels map
     class_labels_map = load_class_labels_map()
@@ -129,7 +137,7 @@ def extract_real_imagenet_activations(
         # Create batch processor
         processor = BatchProcessor(
             extractor=extractor,
-            generator=generator,
+            adapter=adapter,
             output_dirs=output_dirs,
             class_labels_map=class_labels_map,
             device=device,
@@ -163,6 +171,7 @@ def extract_real_imagenet_activations(
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump({
             "model_type": "imagenet_real",
+            "adapter": adapter_name,
             "num_samples": sample_idx,
             "layers": layers,
             "conditioning_sigma": conditioning_sigma,
@@ -273,6 +282,18 @@ def main():
         default=None,
         help="Comma-separated list of class IDs to sample from"
     )
+    parser.add_argument(
+        "--adapter",
+        type=str,
+        default="dmd2-imagenet-64",
+        help=f"Adapter to use. Available: {list_adapters()}"
+    )
+    parser.add_argument(
+        "--label_dropout",
+        type=float,
+        default=0.0,
+        help="Label dropout rate for adapter (use 0.1 for CFG models)"
+    )
 
     args = parser.parse_args()
 
@@ -311,7 +332,9 @@ def main():
         npz_dir=npz_dir,
         lmdb_path=lmdb_path,
         num_classes=args.num_classes,
-        target_classes=target_classes
+        target_classes=target_classes,
+        adapter_name=args.adapter,
+        label_dropout=args.label_dropout
     )
 
 
