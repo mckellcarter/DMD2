@@ -107,7 +107,8 @@ python visualization_app.py \
 python visualization_app.py \
   --embeddings data/embeddings/imagenet_umap_n15_d0.1.csv \
   --checkpoint_path ../checkpoints/imagenet_*.pth \
-  --device cuda
+  --device cuda \
+  --adapter dmd2-imagenet-64  # Optional, this is the default
 
 # Or load activations for dynamic UMAP
 python visualization_app.py --data_dir data
@@ -342,6 +343,27 @@ Each batch JSON file includes ImageNet identifiers:
 - Visualize both real and generated in same embedding space
 
 ## Architecture
+
+### Adapter Pattern
+
+The visualizer uses a **generator adapter pattern** allowing support for multiple diffusion model architectures through a common interface:
+
+```
+visualizer/
+├── adapters/
+│   ├── base.py           # GeneratorAdapter abstract base class
+│   ├── hooks.py          # HookMixin for activation hooks
+│   ├── registry.py       # Adapter discovery and registration
+│   └── dmd2_imagenet.py  # DMD2 ImageNet-64 adapter
+├── core/
+│   ├── masking.py        # ActivationMasker for hook-based generation
+│   ├── generator.py      # generate_with_mask, generate_with_mask_multistep
+│   └── extractor.py      # ActivationExtractor for capturing activations
+```
+
+**Adding new model support**: Create a new adapter implementing `GeneratorAdapter` with `forward()`, `register_activation_hooks()`, and `from_checkpoint()` methods.
+
+### Scripts
 
 **extract_activations.py**: Hook-based activation capture
 **generate_dataset.py**: Batch image + activation generation (for generated images)
