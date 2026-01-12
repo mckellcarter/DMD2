@@ -22,15 +22,14 @@ from sklearn.neighbors import NearestNeighbors
 # For dynamic UMAP recalculation
 from process_embeddings import compute_umap, load_dataset_activations
 
-# For generation from activations
-from activation_masking import ActivationMask, unflatten_activation
-from generate_from_activation import (
-    create_imagenet_generator,
-    generate_with_masked_activation,
-    generate_with_masked_activation_multistep,
-    save_generated_sample,
-    infer_activation_shape,
-    get_denoising_sigmas
+# For generation from activations - using adapter interface
+from adapters import get_adapter
+from core.masking import ActivationMasker, unflatten_activation
+from core.generator import (
+    generate_with_mask,
+    generate_with_mask_multistep,
+    get_denoising_sigmas,
+    save_generated_sample
 )
 
 
@@ -40,12 +39,12 @@ class DMD2Visualizer:
     def __init__(self, data_dir: Path, embeddings_path: Path = None, checkpoint_path: Path = None,
                  device: str = 'cuda', num_steps: int = 1, mask_steps: int = None,
                  guidance_scale: float = 1.0, sigma_max: float = 80.0, sigma_min: float = 0.002,
-                 label_dropout: float = 0.0):
+                 label_dropout: float = 0.0, adapter_name: str = 'dmd2-imagenet-64'):
         """
         Args:
             data_dir: Root data directory
             embeddings_path: Optional path to precomputed embeddings CSV
-            checkpoint_path: Optional path to DMD2 checkpoint for generation
+            checkpoint_path: Optional path to checkpoint for generation
             device: Device for generation ('cuda', 'mps', or 'cpu')
             num_steps: Number of denoising steps (1=single-step, 4/10=multi-step)
             mask_steps: Steps to apply activation mask (default=num_steps, 1=first-step-only)
@@ -53,6 +52,7 @@ class DMD2Visualizer:
             sigma_max: Maximum sigma for denoising schedule
             sigma_min: Minimum sigma for denoising schedule
             label_dropout: Label dropout for model config (use 0.1 for CFG models)
+            adapter_name: Adapter name for model loading (default: dmd2-imagenet-64)
         """
         self.data_dir = Path(data_dir)
         self.embeddings_path = embeddings_path
@@ -64,6 +64,7 @@ class DMD2Visualizer:
         self.sigma_max = sigma_max
         self.sigma_min = sigma_min
         self.label_dropout = label_dropout
+        self.adapter_name = adapter_name
         self.df = None
         self.umap_params = None
         self.activations = None
@@ -76,7 +77,7 @@ class DMD2Visualizer:
         # For generation from activations
         self.umap_reducer = None  # UMAP model for inverse_transform
         self.umap_scaler = None   # Scaler for inverse_transform
-        self.generator = None     # DMD2 generator model
+        self.adapter = None       # GeneratorAdapter instance
         self.layer_shapes = {}    # Cache of layer activation shapes
 
         # Load class labels
@@ -1241,13 +1242,14 @@ class DMD2Visualizer:
                     center_2d = np.mean(neighbor_coords, axis=0).reshape(1, -1)
                     print(f"[GEN] Intended center (avg UMAP coords): ({center_2d[0,0]:.3f}, {center_2d[0,1]:.3f})")
 
-                # Load generator if not already loaded
-                if self.generator is None:
+                # Load adapter if not already loaded
+                if self.adapter is None:
                     if self.checkpoint_path is None:
                         return "Error: No checkpoint path provided", dash.no_update, dash.no_update
 
-                    print(f"Loading generator ({self.num_steps}-step)...")
-                    self.generator = create_imagenet_generator(
+                    print(f"Loading adapter '{self.adapter_name}' ({self.num_steps}-step)...")
+                    AdapterClass = get_adapter(self.adapter_name)
+                    self.adapter = AdapterClass.from_checkpoint(
                         self.checkpoint_path,
                         device=self.device,
                         label_dropout=self.label_dropout
@@ -1258,14 +1260,9 @@ class DMD2Visualizer:
                 if isinstance(layers, str):
                     layers = [layers]
 
-                # Get layer shapes if not cached
-                for layer_name in layers:
-                    if layer_name not in self.layer_shapes:
-                        self.layer_shapes[layer_name] = infer_activation_shape(
-                            self.generator,
-                            layer_name,
-                            self.device
-                        )
+                # Get layer shapes from adapter
+                if not self.layer_shapes:
+                    self.layer_shapes = self.adapter.get_layer_shapes()
 
                 # Split center activation back into per-layer activations
                 # This assumes layers are concatenated in sorted order (same as process_embeddings.py)
@@ -1286,17 +1283,17 @@ class DMD2Visualizer:
 
                 print(f"[GEN] Split activation into {len(activation_dict)} layers", flush=True)
 
-                # Create activation mask
-                print("[GEN] Creating activation mask...", flush=True)
-                mask = ActivationMask(model_type="imagenet")
+                # Create activation masker using adapter interface
+                print("[GEN] Creating activation masker...", flush=True)
+                masker = ActivationMasker(self.adapter)
                 for layer_name, activation in activation_dict.items():
                     print(f"[GEN] Setting mask for {layer_name}, shape={activation.shape}", flush=True)
-                    mask.set_mask(layer_name, activation)
+                    masker.set_mask(layer_name, activation)
 
                 # Register hooks
                 print("[GEN] Registering hooks...", flush=True)
-                mask.register_hooks(self.generator, list(activation_dict.keys()))
-                print(f"[GEN] Registered {len(mask.hooks)} hooks", flush=True)
+                masker.register_hooks(list(activation_dict.keys()))
+                print(f"[GEN] Registered {len(masker._handles)} hooks", flush=True)
 
                 print("[GEN] Starting image generation...", flush=True)
 
@@ -1311,9 +1308,9 @@ class DMD2Visualizer:
                 if self.num_steps > 1:
                     mask_info = f", mask_steps={self.mask_steps or self.num_steps}"
                     print(f"Using {self.num_steps}-step generation{mask_info}")
-                    images, labels, trajectory_acts, intermediate_imgs = generate_with_masked_activation_multistep(
-                        self.generator,
-                        mask,
+                    images, labels, trajectory_acts, intermediate_imgs = generate_with_mask_multistep(
+                        self.adapter,
+                        masker,
                         class_label=class_label,
                         num_steps=self.num_steps,
                         mask_steps=self.mask_steps,
@@ -1328,9 +1325,9 @@ class DMD2Visualizer:
                         return_intermediates=True
                     )
                 else:
-                    images, labels = generate_with_masked_activation(
-                        self.generator,
-                        mask,
+                    images, labels = generate_with_mask(
+                        self.adapter,
+                        masker,
                         class_label=class_label,
                         conditioning_sigma=self.sigma_max,
                         num_samples=1,
@@ -1339,8 +1336,8 @@ class DMD2Visualizer:
                     trajectory_acts = None  # No trajectory for single-step
                     intermediate_imgs = None  # No intermediates for single-step
 
-                # Clean up mask hooks
-                mask.remove_hooks()
+                # Clean up masker hooks
+                masker.remove_hooks()
 
                 print("Image generated successfully")
 
@@ -1707,6 +1704,12 @@ def main():
         default=None,
         help="Steps to apply activation mask (default=num_steps, use 1 for first-step-only)"
     )
+    parser.add_argument(
+        "--adapter",
+        type=str,
+        default="dmd2-imagenet-64",
+        help="Adapter name for model loading (default: dmd2-imagenet-64)"
+    )
     args = parser.parse_args()
 
     visualizer = DMD2Visualizer(
@@ -1719,7 +1722,8 @@ def main():
         guidance_scale=args.guidance_scale,
         sigma_max=args.sigma_max,
         sigma_min=args.sigma_min,
-        label_dropout=args.label_dropout
+        label_dropout=args.label_dropout,
+        adapter_name=args.adapter
     )
 
     visualizer.run(debug=args.debug, port=args.port)
