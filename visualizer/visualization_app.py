@@ -39,12 +39,12 @@ class DMD2Visualizer:
     def __init__(self, data_dir: Path, embeddings_path: Path = None, checkpoint_path: Path = None,
                  device: str = 'cuda', num_steps: int = 1, mask_steps: int = None,
                  guidance_scale: float = 1.0, sigma_max: float = 80.0, sigma_min: float = 0.002,
-                 label_dropout: float = 0.0, adapter_name: str = 'dmd2-imagenet-64'):
+                 label_dropout: float = 0.0, adapter_name: str = None):
         """
         Args:
             data_dir: Root data directory
             embeddings_path: Optional path to precomputed embeddings CSV
-            checkpoint_path: Optional path to checkpoint for generation
+            checkpoint_path: Optional path to checkpoint for generation (auto-loaded from embeddings JSON if not specified)
             device: Device for generation ('cuda', 'mps', or 'cpu')
             num_steps: Number of denoising steps (1=single-step, 4/10=multi-step)
             mask_steps: Steps to apply activation mask (default=num_steps, 1=first-step-only)
@@ -52,7 +52,7 @@ class DMD2Visualizer:
             sigma_max: Maximum sigma for denoising schedule
             sigma_min: Minimum sigma for denoising schedule
             label_dropout: Label dropout for model config (use 0.1 for CFG models)
-            adapter_name: Adapter name for model loading (default: dmd2-imagenet-64)
+            adapter_name: Adapter name for model loading (auto-loaded from embeddings JSON if not specified)
         """
         self.data_dir = Path(data_dir)
         self.embeddings_path = embeddings_path
@@ -229,6 +229,14 @@ class DMD2Visualizer:
             else:
                 self.umap_params = {}
 
+            # Auto-fill adapter and checkpoint from JSON if not specified via CLI
+            if self.adapter_name is None:
+                self.adapter_name = self.umap_params.get('adapter', 'dmd2-imagenet-64')
+                print(f"Using adapter from embeddings: {self.adapter_name}")
+            if self.checkpoint_path is None and self.umap_params.get('checkpoint'):
+                self.checkpoint_path = self.umap_params.get('checkpoint')
+                print(f"Using checkpoint from embeddings: {self.checkpoint_path}")
+
             # Load UMAP model for inverse_transform (optional)
             model_path = Path(self.embeddings_path).with_suffix('.pkl')
             if model_path.exists():
@@ -260,7 +268,7 @@ class DMD2Visualizer:
             print(f"Warning: No metadata found for {model_type}")
             return None, None
 
-        activations, metadata_df = load_dataset_activations(
+        activations, metadata_df, _ = load_dataset_activations(
             activation_dir,
             metadata_path
         )
@@ -1707,8 +1715,8 @@ def main():
     parser.add_argument(
         "--adapter",
         type=str,
-        default="dmd2-imagenet-64",
-        help="Adapter name for model loading (default: dmd2-imagenet-64)"
+        default=None,
+        help="Adapter name for model loading (auto-detected from embeddings JSON if not specified)"
     )
     args = parser.parse_args()
 

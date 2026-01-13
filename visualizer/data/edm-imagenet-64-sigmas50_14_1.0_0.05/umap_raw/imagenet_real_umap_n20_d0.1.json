@@ -1,0 +1,13 @@
+{
+  "model": "imagenet_real",
+  "adapter": "edm-imagenet-64",
+  "checkpoint": "checkpoints/edm-imagenet-64x64-cond-adm.pkl",
+  "layers": ["encoder_bottleneck", "midblock"],
+  "n_neighbors": 20,
+  "min_dist": 0.1,
+  "metric": "euclidean",
+  "n_components": 2,
+  "normalize": false,
+  "random_state": 42,
+  "num_samples": 40000
+}

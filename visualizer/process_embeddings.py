@@ -33,9 +33,10 @@ def load_dataset_activations(
         low_memory: Use memory-mapped temp file (slower but handles large datasets)
 
     Returns:
-        (activation_matrix, metadata_df)
+        (activation_matrix, metadata_df, dataset_info)
         - activation_matrix: (N, D) array of flattened activations
         - metadata_df: DataFrame with sample info
+        - dataset_info: Full dataset_info dict (adapter, checkpoint, layers, etc.)
     """
     import tempfile
 
@@ -154,7 +155,7 @@ def load_dataset_activations(
         print("Replacing NaN/inf with 0...")
         activation_matrix = np.nan_to_num(activation_matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
-    return activation_matrix, metadata_df
+    return activation_matrix, metadata_df, dataset_info
 
 
 def compute_umap(
@@ -204,8 +205,8 @@ def compute_umap(
         min_dist=min_dist,
         metric=metric,
         n_components=n_components,
-        random_state=random_state,
-        verbose=True
+        verbose=True,
+#        random_state=random_state
     )
 
     embeddings = reducer.fit_transform(activations)
@@ -354,7 +355,7 @@ def main():
     output_dir = Path(args.output_dir)
 
     # Load activations
-    activations, metadata_df = load_dataset_activations(
+    activations, metadata_df, dataset_info = load_dataset_activations(
         activation_dir,
         metadata_path,
         max_samples=args.max_samples,
@@ -378,6 +379,9 @@ def main():
 
     umap_params = {
         "model": args.model,
+        "adapter": dataset_info.get("adapter"),
+        "checkpoint": dataset_info.get("checkpoint"),
+        "layers": dataset_info.get("layers"),
         "n_neighbors": args.n_neighbors,
         "min_dist": args.min_dist,
         "metric": args.metric,

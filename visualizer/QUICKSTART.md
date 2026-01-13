@@ -38,11 +38,13 @@ python generate_dataset.py \
 # Process UMAP embeddings (~10 seconds)
 python process_embeddings.py --model imagenet
 
-# Launch visualizer
+# Launch visualizer (adapter/checkpoint auto-detected from JSON)
 ./run_visualizer.sh imagenet
 ```
 
 Open: http://localhost:8050
+
+**Note**: Adapter and checkpoint are auto-detected from the embeddings JSON file.
 
 ## Generate & Visualize (Full Dataset)
 
@@ -68,7 +70,7 @@ python process_embeddings.py \
   --n_neighbors 25 \
   --min_dist 0.1
 
-# Launch
+# Launch (adapter/checkpoint auto-detected)
 ./run_visualizer.sh imagenet --port 8050
 ```
 
@@ -104,13 +106,13 @@ python extract_real_imagenet.py \
   --target_classes "0,1,2,3,4,5,6,7,8,9" \
   --batch_size 128
 
-# Process embeddings
+# Process embeddings (propagates adapter/checkpoint to JSON)
 python process_embeddings.py \
   --model imagenet_real \
   --n_neighbors 25 \
   --min_dist 0.1
 
-# Launch visualizer
+# Launch visualizer (adapter/checkpoint auto-detected)
 ./run_visualizer.sh imagenet_real
 ```
 

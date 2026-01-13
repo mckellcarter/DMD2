@@ -192,6 +192,7 @@ python extract_real_imagenet.py \
 {
   "model_type": "imagenet_real",
   "adapter": "dmd2-imagenet-64",
+  "checkpoint": "checkpoints/imagenet_fid1.51.pth",
   "num_samples": 1000,
   "layers": ["encoder_bottleneck", "midblock"],
   "conditioning_sigma": 80.0,
@@ -201,6 +202,8 @@ python extract_real_imagenet.py \
   "samples": [...]
 }
 ```
+
+**Note**: The `adapter` and `checkpoint` fields are propagated to UMAP embeddings JSON, enabling the visualizer to auto-detect which model to use for generation.
 
 ### Batch Metadata (`batch_XXXXXX.json`)
 
