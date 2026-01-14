@@ -172,6 +172,7 @@ def extract_real_imagenet_activations(
         json.dump({
             "model_type": "imagenet_real",
             "adapter": adapter_name,
+            "checkpoint": checkpoint_path,
             "num_samples": sample_idx,
             "layers": layers,
             "conditioning_sigma": conditioning_sigma,

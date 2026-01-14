@@ -99,20 +99,21 @@ Creates `data/embeddings/imagenet_umap_n15_d0.1.csv`
 ### 4. Launch Visualizer
 
 ```bash
-# With precomputed embeddings
+# With precomputed embeddings (adapter/checkpoint auto-detected from JSON)
 python visualization_app.py \
   --embeddings data/embeddings/imagenet_umap_n15_d0.1.csv
 
-# With generation enabled (requires checkpoint)
+# Override adapter/checkpoint if needed
 python visualization_app.py \
   --embeddings data/embeddings/imagenet_umap_n15_d0.1.csv \
   --checkpoint_path ../checkpoints/imagenet_*.pth \
-  --device cuda \
-  --adapter dmd2-imagenet-64  # Optional, this is the default
+  --adapter dmd2-imagenet-64
 
 # Or load activations for dynamic UMAP
 python visualization_app.py --data_dir data
 ```
+
+**Auto-detection**: The visualizer reads `adapter` and `checkpoint` from the embeddings JSON file. This metadata is propagated from extraction → UMAP processing → visualizer, so you typically only need to specify `--embeddings`.
 
 Open http://localhost:8050
 
@@ -223,10 +224,23 @@ data/
 │       └── sample_000000.json # Metadata
 ├── embeddings/
 │   ├── imagenet_umap_n15_d0.1.csv  # UMAP coordinates + metadata
-│   └── imagenet_umap_n15_d0.1.json # UMAP parameters
+│   └── imagenet_umap_n15_d0.1.json # UMAP parameters (includes adapter/checkpoint)
 └── metadata/
     └── imagenet/
-        └── dataset_info.json  # Global dataset info
+        └── dataset_info.json  # Global dataset info (includes adapter/checkpoint)
+```
+
+**Embeddings JSON** (`imagenet_umap_n15_d0.1.json`):
+```json
+{
+  "model": "imagenet",
+  "adapter": "dmd2-imagenet-64",
+  "checkpoint": "checkpoints/imagenet_fid1.51.pth",
+  "layers": ["encoder_bottleneck", "midblock"],
+  "n_neighbors": 15,
+  "min_dist": 0.1,
+  ...
+}
 ```
 
 ## Pretrained Models
